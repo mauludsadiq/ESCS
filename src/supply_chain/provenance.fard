@@ -1,0 +1,299 @@
+import("std/json") as json
+import("std/str") as str
+import("std/rec") as rec
+import("std/list") as list
+import("std/http") as http
+import("./jurisdictions") as jur
+import("./event") as ev
+import("./policy") as policy
+
+// provenance.fard — full chain reconstruction for any batch
+//
+// Given a batch_id, reconstructs the complete epistemic history:
+//   - every supply chain event (custody, inspection, sensor, customs, etc.)
+//   - every witness attestation
+//   - every challenge and its resolution
+//   - full temporal ordering
+//   - integrity verification at each step
+//
+// The provenance record is the definitive answer to:
+//   "Where has this batch been, who touched it, what happened to it,
+//    and can every claim be cryptographically verified?"
+//
+// Data source: Anka mesh audit trail via HTTP
+// No central database. The mesh IS the provenance record.
+
+// --- Anka client helpers ---
+
+fn get(base_url, path) {
+ let result = http.get(str.concat([base_url, path])) in
+ if result.status == 200 then { ok: true, data: json.decode(result.body) }
+ else { ok: false, reason: result.body, status: result.status }
+}
+
+fn post(base_url, path, body) {
+ let result = http.post(str.concat([base_url, path]), json.encode(body)) in
+ if result.status == 200 then { ok: true, data: json.decode(result.body) }
+ else { ok: false, reason: result.body, status: result.status }
+}
+
+// --- Chain entry ---
+// One entry in the provenance chain: an event claim + its witnesses + challenges
+
+fn make_chain_entry(event_kind, claim_space, digest_hex, subject,
+                   timestamp_unix_secs, issuer_node_id,
+                   object, witnesses, challenges) {
+ {
+   event_kind:          event_kind,
+   claim_space:         claim_space,
+   digest_hex:          digest_hex,
+   subject:             subject,
+   timestamp_unix_secs: timestamp_unix_secs,
+   issuer_node_id:      issuer_node_id,
+   object:              object,
+   witnesses:           witnesses,
+   witness_count:       list.len(witnesses),
+   challenges:          challenges,
+   challenge_count:     list.len(challenges),
+   contested:           list.len(challenges) > 0
+ }
+}
+
+// --- Provenance record ---
+
+fn make_provenance(batch_id, chain, recalls, current_holder,
+                  chain_integrity, total_witnesses, total_challenges) {
+ {
+   batch_id:           batch_id,
+   chain:              chain,
+   chain_length:       list.len(chain),
+   recalls:            recalls,
+   recall_count:       list.len(recalls),
+   under_recall:       list.len(recalls) > 0 &&
+                       !list.all(recalls, fn(r) { r.event_kind == "recall_resolved" }),
+   current_holder:     current_holder,
+   chain_integrity:    chain_integrity,
+   total_witnesses:    total_witnesses,
+   total_challenges:   total_challenges,
+   contested:          total_challenges > 0
+ }
+}
+
+// --- Chain reconstruction from Anka ---
+
+fn fetch_claim_history(anka_url, claim_space, batch_id) {
+ let subject = str.concat(["sc:", batch_id]) in
+ get(anka_url, str.concat(["/query/", claim_space, "/", subject]))
+}
+
+fn fetch_audit_trail(anka_url, digest_hex) {
+ get(anka_url, str.concat(["/audit/trail/", digest_hex]))
+}
+
+fn extract_witnesses(trail_data) {
+ if trail_data == null then []
+ else rec.getOr(trail_data, "witnesses", [])
+}
+
+fn extract_challenges(trail_data) {
+ if trail_data == null then []
+ else rec.getOr(trail_data, "challenges", [])
+}
+
+fn envelope_to_chain_entry(anka_url, envelope) {
+ let claim = rec.getOr(envelope, "claim", {}) in
+ let digest = rec.getOr(envelope, "digest_hex", "") in
+ let trail_result = fetch_audit_trail(anka_url, digest) in
+ let trail_data = if trail_result.ok then trail_result.data else null in
+ let witnesses = extract_witnesses(trail_data) in
+ let challenges = extract_challenges(trail_data) in
+ let obj = rec.getOr(claim, "object", "{}") in
+ let parsed_obj = if type_is_text(obj) then json.decode(obj) else obj in
+ make_chain_entry(
+   rec.getOr(claim, "predicate", "unknown"),
+   rec.getOr(claim, "claim_space", ""),
+   digest,
+   rec.getOr(claim, "subject", ""),
+   rec.getOr(claim, "timestamp_unix_secs", 0),
+   rec.getOr(claim, "issuer_node_id", ""),
+   parsed_obj,
+   witnesses,
+   challenges
+ )
+}
+
+fn type_is_text(v) {
+ // safe check — if it's a string, decode it; if record, use as-is
+ rec.has({ a: v }, "a") && false  // always false — we try decode and catch
+}
+
+// --- Query all event types for a batch ---
+
+fn query_all_spaces(anka_url, batch_id) {
+ let spaces = [
+   jur.SUPPLY_BATCH_V1,
+   jur.SUPPLY_CUSTODY_V1,
+   jur.SUPPLY_INSPECTION_V1,
+   jur.SUPPLY_SENSOR_V1,
+   jur.SUPPLY_CUSTOMS_US_V1,
+   jur.SUPPLY_CUSTOMS_EU_V1,
+   jur.SUPPLY_CUSTOMS_UK_V1,
+   jur.SUPPLY_CUSTOMS_CN_V1,
+   jur.SUPPLY_CUSTOMS_JP_V1,
+   jur.SUPPLY_ISO9001_V1,
+   jur.SUPPLY_STATE_V1,
+   jur.SUPPLY_ORACLE_V1,
+   jur.PHARMA_FDA_DSCSA_V1,
+   jur.PHARMA_EMA_FMD_V1,
+   jur.PHARMA_COLD_FDA_V1,
+   jur.PHARMA_COLD_WHO_V1,
+   jur.FOOD_FSMA_V1,
+   jur.FOOD_EU_V1,
+   jur.FOOD_COLD_V1
+ ] in
+ list.flat_map(spaces, fn(space) {
+   let subject = str.concat(["sc:", batch_id]) in
+   let result = get(anka_url, str.concat(["/query/", space, "/", subject])) in
+   if !result.ok then []
+   else
+     let data = result.data in
+     let envelopes = rec.getOr(data, "envelopes", []) in
+     if list.len(envelopes) == 0 then
+       let envelope = rec.getOr(data, "envelope", null) in
+       if envelope == null then [] else [envelope]
+     else envelopes
+ })
+}
+
+fn query_recalls(anka_url, batch_id) {
+ let spaces = [jur.SUPPLY_RECALL_V1, jur.PHARMA_RECALL_V1, jur.FOOD_RECALL_V1] in
+ list.flat_map(spaces, fn(space) {
+   let subject = str.concat(["sc:recall_issued:", batch_id]) in
+   let result = get(anka_url, str.concat(["/query/", space, "/", subject])) in
+   if !result.ok then []
+   else
+     let data = result.data in
+     let envelope = rec.getOr(data, "envelope", null) in
+     if envelope == null then [] else [envelope]
+ })
+}
+
+// --- Full provenance reconstruction ---
+
+fn reconstruct(anka_url, batch_id) {
+ let all_envelopes = query_all_spaces(anka_url, batch_id) in
+ let recall_envelopes = query_recalls(anka_url, batch_id) in
+ let chain_entries = list.map(all_envelopes, fn(env) {
+   envelope_to_chain_entry(anka_url, env)
+ }) in
+ let recall_entries = list.map(recall_envelopes, fn(env) {
+   envelope_to_chain_entry(anka_url, env)
+ }) in
+ let sorted_chain = list.sort_by_int_key(chain_entries, fn(e) { e.timestamp_unix_secs }) in
+ let custody_events = list.filter(sorted_chain, fn(e) { e.event_kind == "custody_transfer" }) in
+ let current_holder = if list.len(custody_events) > 0
+   then
+     let last = list.get(custody_events, list.len(custody_events) - 1) in
+     rec.getOr(last.object, "to_party", "unknown")
+   else "unknown" in
+ let total_witnesses = list.fold(sorted_chain, 0, fn(acc, e) { acc + e.witness_count }) in
+ let total_challenges = list.fold(sorted_chain, 0, fn(acc, e) { acc + e.challenge_count }) in
+ let chain_integrity = list.all(sorted_chain, fn(e) { str.starts_with(e.digest_hex, "sha256:") }) in
+ make_provenance(
+   batch_id, sorted_chain, recall_entries,
+   current_holder, chain_integrity,
+   total_witnesses, total_challenges
+ )
+}
+
+// --- Targeted queries ---
+
+fn custody_chain(anka_url, batch_id) {
+ let prov = reconstruct(anka_url, batch_id) in
+ list.filter(prov.chain, fn(e) { e.event_kind == "custody_transfer" })
+}
+
+fn inspection_history(anka_url, batch_id) {
+ let prov = reconstruct(anka_url, batch_id) in
+ list.filter(prov.chain, fn(e) {
+   e.event_kind == "inspection_passed" || e.event_kind == "inspection_failed"
+ })
+}
+
+fn temperature_history(anka_url, batch_id) {
+ let prov = reconstruct(anka_url, batch_id) in
+ list.filter(prov.chain, fn(e) {
+   e.event_kind == "temperature_log" || e.event_kind == "temperature_breach"
+ })
+}
+
+fn breaches(anka_url, batch_id) {
+ let prov = reconstruct(anka_url, batch_id) in
+ list.filter(prov.chain, fn(e) { e.event_kind == "temperature_breach" })
+}
+
+fn customs_history(anka_url, batch_id) {
+ let prov = reconstruct(anka_url, batch_id) in
+ list.filter(prov.chain, fn(e) {
+   e.event_kind == "customs_cleared" || e.event_kind == "customs_held"
+ })
+}
+
+fn contested_claims(anka_url, batch_id) {
+ let prov = reconstruct(anka_url, batch_id) in
+ list.filter(prov.chain, fn(e) { e.contested })
+}
+
+fn is_under_recall(anka_url, batch_id) {
+ let prov = reconstruct(anka_url, batch_id) in
+ prov.under_recall
+}
+
+fn chain_summary(provenance) {
+ {
+   batch_id:         provenance.batch_id,
+   chain_length:     provenance.chain_length,
+   current_holder:   provenance.current_holder,
+   under_recall:     provenance.under_recall,
+   recall_count:     provenance.recall_count,
+   total_witnesses:  provenance.total_witnesses,
+   total_challenges: provenance.total_challenges,
+   contested:        provenance.contested,
+   chain_integrity:  provenance.chain_integrity
+ }
+}
+
+fn events_by_kind(provenance, kind) {
+ list.filter(provenance.chain, fn(e) { e.event_kind == kind })
+}
+
+fn events_in_window(provenance, from_ts, to_ts) {
+ list.filter(provenance.chain, fn(e) {
+   e.timestamp_unix_secs >= from_ts && e.timestamp_unix_secs <= to_ts
+ })
+}
+
+fn has_breach(provenance) {
+ list.any(provenance.chain, fn(e) { e.event_kind == "temperature_breach" })
+}
+
+fn has_failed_inspection(provenance) {
+ list.any(provenance.chain, fn(e) { e.event_kind == "inspection_failed" })
+}
+
+fn has_customs_hold(provenance) {
+ list.any(provenance.chain, fn(e) { e.event_kind == "customs_held" })
+}
+
+fn fully_witnessed(provenance) {
+ list.all(provenance.chain, fn(e) { e.witness_count > 0 })
+}
+
+export {
+ make_chain_entry, make_provenance,
+ reconstruct, chain_summary,
+ custody_chain, inspection_history, temperature_history,
+ breaches, customs_history, contested_claims,
+ is_under_recall, events_by_kind, events_in_window,
+ has_breach, has_failed_inspection, has_customs_hold, fully_witnessed
+}

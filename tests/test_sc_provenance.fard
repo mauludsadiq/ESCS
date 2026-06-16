@@ -1,0 +1,194 @@
+import("std/rec") as rec
+import("std/list") as list
+import("std/str") as str
+import("../src/supply_chain/provenance") as prov
+import("../src/supply_chain/jurisdictions") as jur
+import("../src/supply_chain/event") as ev
+
+let batch_id = "batch:LOT-2025-0042"
+let now = 1710000000
+
+// Build a synthetic provenance record for testing
+fn make_entry(kind, claim_space, ts, witnesses, challenges) {
+  prov.make_chain_entry(
+    kind, claim_space,
+    str.concat(["sha256:", kind, "digest"]),
+    str.concat(["sc:", kind, ":", batch_id]),
+    ts, "ed25519:testnode",
+    { kind: kind, batch_id: batch_id },
+    witnesses, challenges
+  )
+}
+
+let entry_created    = make_entry("batch_created",    jur.SUPPLY_BATCH_V1,      now,        ["w1"], [])
+let entry_custody_1  = make_entry("custody_transfer", jur.SUPPLY_CUSTODY_V1,    now + 100,  ["w2", "w3"], [])
+let entry_inspection = make_entry("inspection_passed", jur.SUPPLY_INSPECTION_V1, now + 200, ["w4"], [])
+let entry_temp_log   = make_entry("temperature_log",  jur.SUPPLY_SENSOR_V1,     now + 300,  ["w5"], [])
+let entry_temp_breach = make_entry("temperature_breach", jur.SUPPLY_SENSOR_V1,  now + 400,  [], ["c1"])
+let entry_customs    = make_entry("customs_cleared",  jur.SUPPLY_CUSTOMS_US_V1, now + 500,  ["w6"], [])
+let entry_custody_2  = make_entry("custody_transfer", jur.SUPPLY_CUSTODY_V1,    now + 600,  ["w7"], [])
+let entry_insp_fail  = make_entry("inspection_failed", jur.SUPPLY_INSPECTION_V1, now + 700, [], ["c2"])
+
+let entry_recall = {
+  ...make_entry("recall_issued", jur.SUPPLY_RECALL_V1, now + 800, ["w8"], []),
+  object: { kind: "recall_issued", batch_id: batch_id, severity: "class_i" }
+}
+
+let chain = [
+  entry_created, entry_custody_1, entry_inspection,
+  entry_temp_log, entry_temp_breach, entry_customs,
+  entry_custody_2, entry_insp_fail
+]
+
+let provenance = prov.make_provenance(
+  batch_id, chain, [entry_recall],
+  "party:warehouse-b", true, 8, 2
+)
+
+test "provenance batch_id is correct" {
+  provenance.batch_id == batch_id
+}
+
+test "provenance chain_length is 8" {
+  provenance.chain_length == 8
+}
+
+test "provenance current_holder is set" {
+  provenance.current_holder == "party:warehouse-b"
+}
+
+test "provenance chain_integrity is true" {
+  provenance.chain_integrity == true
+}
+
+test "provenance total_witnesses is 8" {
+  provenance.total_witnesses == 8
+}
+
+test "provenance total_challenges is 2" {
+  provenance.total_challenges == 2
+}
+
+test "provenance contested is true" {
+  provenance.contested == true
+}
+
+test "provenance under_recall is true" {
+  provenance.under_recall == true
+}
+
+test "provenance recall_count is 1" {
+  provenance.recall_count == 1
+}
+
+test "chain_summary returns correct batch_id" {
+  let summary = prov.chain_summary(provenance) in
+  summary.batch_id == batch_id
+}
+
+test "chain_summary has chain_length" {
+  let summary = prov.chain_summary(provenance) in
+  summary.chain_length == 8
+}
+
+test "chain_summary under_recall is true" {
+  let summary = prov.chain_summary(provenance) in
+  summary.under_recall == true
+}
+
+test "events_by_kind finds custody_transfers" {
+  let transfers = prov.events_by_kind(provenance, "custody_transfer") in
+  list.len(transfers) == 2
+}
+
+test "events_by_kind finds temperature events" {
+  let temps = prov.events_by_kind(provenance, "temperature_log") in
+  list.len(temps) == 1
+}
+
+test "events_by_kind finds inspection_failed" {
+  let fails = prov.events_by_kind(provenance, "inspection_failed") in
+  list.len(fails) == 1
+}
+
+test "events_in_window filters by timestamp" {
+  let window = prov.events_in_window(provenance, now + 200, now + 400) in
+  list.len(window) == 3
+}
+
+test "events_in_window empty for out-of-range" {
+  let window = prov.events_in_window(provenance, now + 9000, now + 9999) in
+  list.len(window) == 0
+}
+
+test "has_breach true when temperature_breach exists" {
+  prov.has_breach(provenance) == true
+}
+
+test "has_breach false when no breach" {
+  let clean_chain = [entry_created, entry_custody_1, entry_inspection] in
+  let clean_prov = prov.make_provenance(batch_id, clean_chain, [], "party:a", true, 3, 0) in
+  prov.has_breach(clean_prov) == false
+}
+
+test "has_failed_inspection true when inspection_failed exists" {
+  prov.has_failed_inspection(provenance) == true
+}
+
+test "has_failed_inspection false for clean chain" {
+  let clean_chain = [entry_created, entry_custody_1, entry_inspection] in
+  let clean_prov = prov.make_provenance(batch_id, clean_chain, [], "party:a", true, 3, 0) in
+  prov.has_failed_inspection(clean_prov) == false
+}
+
+test "has_customs_hold false when only cleared" {
+  prov.has_customs_hold(provenance) == false
+}
+
+test "has_customs_hold true when customs_held exists" {
+  let held = make_entry("customs_held", jur.SUPPLY_CUSTOMS_US_V1, now + 550, [], ["c3"]) in
+  let chain2 = list.append(chain, held) in
+  let prov2 = prov.make_provenance(batch_id, chain2, [], "party:b", true, 8, 3) in
+  prov.has_customs_hold(prov2) == true
+}
+
+test "fully_witnessed false when entries have no witnesses" {
+  prov.fully_witnessed(provenance) == false
+}
+
+test "fully_witnessed true when all entries witnessed" {
+  let w_chain = [
+    make_entry("batch_created",    jur.SUPPLY_BATCH_V1,    now,       ["w1"], []),
+    make_entry("custody_transfer", jur.SUPPLY_CUSTODY_V1,  now + 100, ["w2"], [])
+  ] in
+  let w_prov = prov.make_provenance(batch_id, w_chain, [], "party:b", true, 2, 0) in
+  prov.fully_witnessed(w_prov) == true
+}
+
+test "make_chain_entry digest starts with sha256:" {
+  str.starts_with(entry_created.digest_hex, "sha256:")
+}
+
+test "make_chain_entry witness_count matches witnesses list" {
+  entry_custody_1.witness_count == 2
+}
+
+test "make_chain_entry contested true when challenges exist" {
+  entry_temp_breach.contested == true
+}
+
+test "make_chain_entry contested false when no challenges" {
+  entry_created.contested == false
+}
+
+test "chain entry challenge_count is correct" {
+  entry_temp_breach.challenge_count == 1
+}
+
+test "chain entry event_kind is correct" {
+  entry_inspection.event_kind == "inspection_passed"
+}
+
+test "chain entry claim_space is correct" {
+  entry_customs.claim_space == jur.SUPPLY_CUSTOMS_US_V1
+}
