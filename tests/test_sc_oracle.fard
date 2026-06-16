@@ -1,0 +1,220 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("../src/supply_chain/oracle") as oracle
+import("../src/supply_chain/jurisdictions") as jur
+import("../src/supply_chain/event") as ev
+
+// Generate test keypairs via EOS kernel pattern
+import("/Users/g.bogans/Downloads/EOS/src/kernel/keypair") as keypair
+
+let root_kp     = keypair.generate("escs-root-oracle-seed")
+let fda_kp      = keypair.generate("escs-fda-oracle-seed")
+let customs_kp  = keypair.generate("escs-customs-oracle-seed")
+let sensor_kp   = keypair.generate("escs-sensor-oracle-seed")
+let bad_kp      = keypair.generate("escs-unauthorized-seed")
+
+let now = 1710000000
+
+let fda_oracle = oracle.make_oracle(
+  "oracle:fda-001", fda_kp.public_key_hex,
+  oracle.TYPE_REGULATORY, jur.PHARMA_FDA_DSCSA_V1,
+  "FDA-REG-2025-001", 1700000000, 0, root_kp.node_id
+)
+
+let customs_oracle = oracle.make_oracle(
+  "oracle:cbp-001", customs_kp.public_key_hex,
+  oracle.TYPE_CUSTOMS, jur.SUPPLY_CUSTOMS_US_V1,
+  "CBP-ACC-2025-001", 1700000000, 0, root_kp.node_id
+)
+
+let sensor_oracle = oracle.make_oracle(
+  "oracle:sensor-cold-007", sensor_kp.public_key_hex,
+  oracle.TYPE_SENSOR, jur.PHARMA_COLD_FDA_V1,
+  "ISO-SENSOR-2025-001", 1700000000, 0, root_kp.node_id
+)
+
+let oracle_set = oracle.make_oracle_set(
+  jur.PHARMA_FDA_DSCSA_V1,
+  [fda_oracle, customs_oracle, sensor_oracle],
+  root_kp.node_id, now
+)
+
+test "oracle make produces correct oracle_type" {
+  fda_oracle.oracle_type == oracle.TYPE_REGULATORY
+}
+
+test "oracle make produces correct jurisdiction" {
+  fda_oracle.jurisdiction == jur.PHARMA_FDA_DSCSA_V1
+}
+
+test "oracle sign and verify passes" {
+  let signed = oracle.sign_oracle(fda_oracle, root_kp.private_key_hex) in
+  oracle.verify_oracle(signed, root_kp.public_key_hex).valid == true
+}
+
+test "oracle verify fails with wrong key" {
+  let signed = oracle.sign_oracle(fda_oracle, root_kp.private_key_hex) in
+  oracle.verify_oracle(signed, bad_kp.public_key_hex).valid == false
+}
+
+test "oracle digest starts with sha256:" {
+  str.starts_with(oracle.oracle_digest(fda_oracle), "sha256:")
+}
+
+test "oracle_active true for valid oracle" {
+  oracle.oracle_active(fda_oracle, now) == true
+}
+
+test "oracle_active false for revoked oracle" {
+  let revoked = oracle.revoke_oracle(fda_oracle) in
+  oracle.oracle_active(revoked, now) == false
+}
+
+test "oracle_active false for expired oracle" {
+  let expired = { ...fda_oracle, valid_until: 1700000001 } in
+  oracle.oracle_active(expired, now) == false
+}
+
+test "oracle_active false for future oracle" {
+  let future = { ...fda_oracle, valid_from: now + 9999 } in
+  oracle.oracle_active(future, now) == false
+}
+
+test "oracle_set make has correct count" {
+  oracle_set.oracle_count == 3
+}
+
+test "oracle_set sign and verify passes" {
+  let signed = oracle.sign_oracle_set(oracle_set, root_kp.private_key_hex) in
+  oracle.verify_oracle_set(signed, root_kp.public_key_hex).valid == true
+}
+
+test "oracle_set verify fails with wrong key" {
+  let signed = oracle.sign_oracle_set(oracle_set, root_kp.private_key_hex) in
+  oracle.verify_oracle_set(signed, bad_kp.public_key_hex).valid == false
+}
+
+test "oracle_set digest starts with sha256:" {
+  str.starts_with(oracle.oracle_set_digest(oracle_set), "sha256:")
+}
+
+test "add_oracle increases count" {
+  let new_oracle = oracle.make_oracle(
+    "oracle:new-001", bad_kp.public_key_hex,
+    oracle.TYPE_INSPECTION, jur.SUPPLY_INSPECTION_V1,
+    "REF-001", 1700000000, 0, root_kp.node_id
+  ) in
+  let updated = oracle.add_oracle(oracle_set, new_oracle) in
+  updated.oracle_count == 4
+}
+
+test "add_oracle upserts existing oracle" {
+  let updated_fda = { ...fda_oracle, accreditation_ref: "FDA-REG-2025-002" } in
+  let updated = oracle.add_oracle(oracle_set, updated_fda) in
+  updated.oracle_count == 3
+}
+
+test "remove_oracle decreases count" {
+  let updated = oracle.remove_oracle(oracle_set, "oracle:fda-001") in
+  updated.oracle_count == 2
+}
+
+test "find_oracle returns correct oracle" {
+  let found = oracle.find_oracle(oracle_set, "oracle:fda-001") in
+  found != null && found.some.oracle_type == oracle.TYPE_REGULATORY
+}
+
+test "find_oracle returns null for unknown" {
+  let found = oracle.find_oracle(oracle_set, "oracle:unknown") in
+  found == null || rec.has(found, "none")
+}
+
+test "find_by_pubkey returns correct oracle" {
+  let found = oracle.find_by_pubkey(oracle_set, fda_kp.public_key_hex) in
+  found != null && found.some.oracle_id == "oracle:fda-001"
+}
+
+test "oracles_for_type returns only regulatory" {
+  let regs = oracle.oracles_for_type(oracle_set, oracle.TYPE_REGULATORY) in
+  list.len(regs) == 1 && list.head(regs).oracle_id == "oracle:fda-001"
+}
+
+test "active_oracles returns all non-revoked" {
+  let active = oracle.active_oracles(oracle_set, now) in
+  list.len(active) == 3
+}
+
+test "active_oracles excludes revoked" {
+  let revoked_set = oracle.add_oracle(oracle_set, oracle.revoke_oracle(fda_oracle)) in
+  let active = oracle.active_oracles(revoked_set, now) in
+  list.len(active) == 2
+}
+
+test "is_authorized true for registered oracle" {
+  oracle.is_authorized(oracle_set, fda_kp.public_key_hex,
+    jur.PHARMA_FDA_DSCSA_V1, oracle.TYPE_REGULATORY, now) == true
+}
+
+test "is_authorized false for unregistered key" {
+  oracle.is_authorized(oracle_set, bad_kp.public_key_hex,
+    jur.PHARMA_FDA_DSCSA_V1, oracle.TYPE_REGULATORY, now) == false
+}
+
+test "is_authorized false for wrong type" {
+  oracle.is_authorized(oracle_set, fda_kp.public_key_hex,
+    jur.PHARMA_FDA_DSCSA_V1, oracle.TYPE_CUSTOMS, now) == false
+}
+
+test "authorization_report authorized true for valid oracle" {
+  let report = oracle.authorization_report(oracle_set, fda_kp.public_key_hex,
+    jur.PHARMA_FDA_DSCSA_V1, oracle.TYPE_REGULATORY, now) in
+  report.authorized == true
+}
+
+test "authorization_report reason for unregistered key" {
+  let report = oracle.authorization_report(oracle_set, bad_kp.public_key_hex,
+    jur.PHARMA_FDA_DSCSA_V1, oracle.TYPE_REGULATORY, now) in
+  report.authorized == false && report.reason == "oracle not registered"
+}
+
+test "authorization_report reason for revoked oracle" {
+  let revoked_set = oracle.add_oracle(oracle_set, oracle.revoke_oracle(fda_oracle)) in
+  let report = oracle.authorization_report(revoked_set, fda_kp.public_key_hex,
+    jur.PHARMA_FDA_DSCSA_V1, oracle.TYPE_REGULATORY, now) in
+  report.authorized == false && report.reason == "oracle revoked"
+}
+
+test "sign_event and verify_event_signature passes" {
+  let e = ev.temperature_log("batch:001", "sensor:007", "Chicago",
+    2.1, 7.8, 4.5, 1710000000, 1710003600, 360) in
+  let signed = oracle.sign_event(e, sensor_kp.private_key_hex) in
+  oracle.verify_event_signature(signed, sensor_kp.public_key_hex).valid == true
+}
+
+test "verify_event_signature fails with wrong key" {
+  let e = ev.temperature_log("batch:001", "sensor:007", "Chicago",
+    2.1, 7.8, 4.5, 1710000000, 1710003600, 360) in
+  let signed = oracle.sign_event(e, sensor_kp.private_key_hex) in
+  oracle.verify_event_signature(signed, bad_kp.public_key_hex).valid == false
+}
+
+test "verify_event_signature fails for tampered event" {
+  let e = ev.temperature_log("batch:001", "sensor:007", "Chicago",
+    2.1, 7.8, 4.5, 1710000000, 1710003600, 360) in
+  let signed = oracle.sign_event(e, sensor_kp.private_key_hex) in
+  let tampered = { ...signed, event: { ...e, temp_max_c: 99.9 } } in
+  oracle.verify_event_signature(tampered, sensor_kp.public_key_hex).valid == false
+}
+
+test "ALL_TYPES contains 6 oracle types" {
+  list.len(oracle.ALL_TYPES) == 6
+}
+
+test "is_known_type true for regulatory" {
+  oracle.is_known_type(oracle.TYPE_REGULATORY) == true
+}
+
+test "is_known_type false for unknown" {
+  oracle.is_known_type("hacker") == false
+}

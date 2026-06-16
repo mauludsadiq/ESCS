@@ -1,0 +1,260 @@
+import("std/json") as json
+import("std/str") as str
+import("std/rec") as rec
+import("std/list") as list
+import("std/type") as type
+import("std/crypto") as crypto
+import("std/hash") as hash
+import("./jurisdictions") as jur
+
+// oracle.fard — accredited oracle model for ESCS
+//
+// Oracles are the root of trust for high-stakes supply chain events.
+// An oracle is an accredited entity whose Ed25519 public key is registered
+// in an oracle set for a specific jurisdiction.
+//
+// Oracle types:
+//   regulatory    FDA, EMA, PMDA, ANVISA, MHRA — regulatory body attestations
+//   inspection    Accredited inspection bodies (SGS, Bureau Veritas, Intertek)
+//   customs       Customs authorities (CBP, HMRC, EU customs)
+//   sensor        IoT device oracles — hardware-attested sensor readings
+//   certification Certification bodies (ISO, halal boards, organic certifiers)
+//   recall        Recall-issuing authorities (FDA, EFSA, MHRA)
+//
+// An oracle set is a signed list of accredited oracle public keys per jurisdiction.
+// Events signed by unregistered oracles are rejected at the gate.
+//
+// Oracle registration flow:
+//   1. Authority generates keypair
+//   2. Root oracle signs registration claim
+//   3. Oracle set updated and re-signed
+//   4. Gate policies reference oracle set digest
+
+// --- Oracle entry ---
+
+fn make_oracle(oracle_id, public_key_hex, oracle_type, jurisdiction,
+              accreditation_ref, valid_from, valid_until, issuer_id) {
+ {
+   oracle_id:          oracle_id,
+   public_key_hex:     public_key_hex,
+   oracle_type:        oracle_type,
+   jurisdiction:       jurisdiction,
+   accreditation_ref:  accreditation_ref,
+   valid_from:         valid_from,
+   valid_until:        valid_until,
+   issuer_id:          issuer_id,
+   revoked:            false
+ }
+}
+
+fn oracle_digest(oracle) {
+ let canonical = json.canonicalize({
+   oracle_id:         oracle.oracle_id,
+   public_key_hex:    oracle.public_key_hex,
+   oracle_type:       oracle.oracle_type,
+   jurisdiction:      oracle.jurisdiction,
+   accreditation_ref: oracle.accreditation_ref,
+   valid_from:        oracle.valid_from,
+   valid_until:       oracle.valid_until,
+   issuer_id:         oracle.issuer_id
+ }) in
+ hash.sha256_text(canonical)
+}
+
+fn sign_oracle(oracle, issuer_private_key_hex) {
+ let digest = oracle_digest(oracle) in
+ let raw = str.slice(digest, 7, str.len(digest)) in
+ let sig = crypto.ed25519_sign(issuer_private_key_hex, raw) in
+ { ...oracle, digest_hex: digest, issuer_signature_hex: sig }
+}
+
+fn verify_oracle(signed_oracle, issuer_public_key_hex) {
+ let schema_ok =
+   rec.has(signed_oracle, "oracle_id") &&
+   rec.has(signed_oracle, "public_key_hex") &&
+   rec.has(signed_oracle, "oracle_type") &&
+   rec.has(signed_oracle, "jurisdiction") &&
+   rec.has(signed_oracle, "digest_hex") &&
+   rec.has(signed_oracle, "issuer_signature_hex") &&
+   str.starts_with(signed_oracle.digest_hex, "sha256:") in
+ let expected = if schema_ok then oracle_digest(signed_oracle) else "sha256:invalid" in
+ let digest_ok = schema_ok && expected == signed_oracle.digest_hex in
+ let raw = if digest_ok then str.slice(signed_oracle.digest_hex, 7, str.len(signed_oracle.digest_hex)) else "" in
+ let sig_ok = if digest_ok
+   then crypto.ed25519_verify(issuer_public_key_hex, raw, signed_oracle.issuer_signature_hex)
+   else false in
+ { valid: schema_ok && digest_ok && sig_ok, schema_ok: schema_ok, digest_ok: digest_ok, signature_ok: sig_ok }
+}
+
+fn oracle_active(oracle, now_unix_secs) {
+ !oracle.revoked &&
+ oracle.valid_from <= now_unix_secs &&
+ (oracle.valid_until == 0 || oracle.valid_until > now_unix_secs)
+}
+
+fn revoke_oracle(oracle) {
+ { ...oracle, revoked: true }
+}
+
+// --- Oracle set ---
+
+fn make_oracle_set(jurisdiction, oracles, issuer_id, timestamp_unix_secs) {
+ {
+   jurisdiction:       jurisdiction,
+   oracles:            oracles,
+   oracle_count:       list.len(oracles),
+   issuer_id:          issuer_id,
+   timestamp_unix_secs: timestamp_unix_secs
+ }
+}
+
+fn oracle_set_digest(oracle_set) {
+ let canonical = json.canonicalize({
+   jurisdiction:        oracle_set.jurisdiction,
+   oracles:             oracle_set.oracles,
+   issuer_id:           oracle_set.issuer_id,
+   timestamp_unix_secs: oracle_set.timestamp_unix_secs
+ }) in
+ hash.sha256_text(canonical)
+}
+
+fn sign_oracle_set(oracle_set, issuer_private_key_hex) {
+ let digest = oracle_set_digest(oracle_set) in
+ let raw = str.slice(digest, 7, str.len(digest)) in
+ let sig = crypto.ed25519_sign(issuer_private_key_hex, raw) in
+ { oracle_set: oracle_set, digest_hex: digest, signature_hex: sig }
+}
+
+fn verify_oracle_set(envelope, issuer_public_key_hex) {
+ let schema_ok =
+   rec.has(envelope, "oracle_set") &&
+   rec.has(envelope, "digest_hex") &&
+   rec.has(envelope, "signature_hex") &&
+   str.starts_with(envelope.digest_hex, "sha256:") in
+ let expected = if schema_ok then oracle_set_digest(envelope.oracle_set) else "sha256:invalid" in
+ let digest_ok = schema_ok && expected == envelope.digest_hex in
+ let raw = if digest_ok then str.slice(envelope.digest_hex, 7, str.len(envelope.digest_hex)) else "" in
+ let sig_ok = if digest_ok
+   then crypto.ed25519_verify(issuer_public_key_hex, raw, envelope.signature_hex)
+   else false in
+ { valid: schema_ok && digest_ok && sig_ok, schema_ok: schema_ok, digest_ok: digest_ok, signature_ok: sig_ok }
+}
+
+fn add_oracle(oracle_set, oracle) {
+ let without = list.filter(oracle_set.oracles, fn(o) { o.oracle_id != oracle.oracle_id }) in
+ let next = list.append(without, oracle) in
+ { ...oracle_set, oracles: next, oracle_count: list.len(next) }
+}
+
+fn remove_oracle(oracle_set, oracle_id) {
+ let next = list.filter(oracle_set.oracles, fn(o) { o.oracle_id != oracle_id }) in
+ { ...oracle_set, oracles: next, oracle_count: list.len(next) }
+}
+
+// --- Oracle lookup ---
+
+fn find_oracle(oracle_set, oracle_id) {
+ list.find(oracle_set.oracles, fn(o) { o.oracle_id == oracle_id })
+}
+
+fn find_by_pubkey(oracle_set, public_key_hex) {
+ list.find(oracle_set.oracles, fn(o) { o.public_key_hex == public_key_hex })
+}
+
+fn oracles_for_type(oracle_set, oracle_type) {
+ list.filter(oracle_set.oracles, fn(o) { o.oracle_type == oracle_type })
+}
+
+fn oracles_for_jurisdiction(oracle_set, jurisdiction) {
+ list.filter(oracle_set.oracles, fn(o) { o.jurisdiction == jurisdiction })
+}
+
+fn active_oracles(oracle_set, now_unix_secs) {
+ list.filter(oracle_set.oracles, fn(o) { oracle_active(o, now_unix_secs) })
+}
+
+// --- Authorization check ---
+// Is this public key an active, accredited oracle for this jurisdiction and type?
+
+fn is_authorized(oracle_set, public_key_hex, jurisdiction, oracle_type, now_unix_secs) {
+ let matching = list.filter(oracle_set.oracles, fn(o) {
+   o.public_key_hex == public_key_hex &&
+   (o.jurisdiction == jurisdiction || o.jurisdiction == "*") &&
+   (o.oracle_type == oracle_type || o.oracle_type == "*") &&
+   oracle_active(o, now_unix_secs)
+ }) in
+ list.len(matching) > 0
+}
+
+fn authorization_report(oracle_set, public_key_hex, jurisdiction, oracle_type, now_unix_secs) {
+ let found = find_by_pubkey(oracle_set, public_key_hex) in
+ if found == null || rec.has(found, "none") then
+   { authorized: false, reason: "oracle not registered", public_key_hex: public_key_hex }
+ else
+   let oracle = found.some in
+   if oracle.revoked then
+     { authorized: false, reason: "oracle revoked", oracle_id: oracle.oracle_id }
+   else if !oracle_active(oracle, now_unix_secs) then
+     { authorized: false, reason: "oracle expired or not yet valid", oracle_id: oracle.oracle_id }
+   else if oracle.jurisdiction != jurisdiction && oracle.jurisdiction != "*" then
+     { authorized: false, reason: "jurisdiction mismatch", oracle_id: oracle.oracle_id,
+       expected: jurisdiction, actual: oracle.jurisdiction }
+   else if oracle.oracle_type != oracle_type && oracle.oracle_type != "*" then
+     { authorized: false, reason: "oracle type mismatch", oracle_id: oracle.oracle_id,
+       expected: oracle_type, actual: oracle.oracle_type }
+   else
+     { authorized: true, oracle_id: oracle.oracle_id, oracle_type: oracle.oracle_type }
+}
+
+// --- Event signing by oracle ---
+// An oracle signs a supply chain event payload to attest it
+
+fn sign_event(event, oracle_private_key_hex) {
+ let canonical = json.canonicalize(event) in
+ let digest = hash.sha256_text(canonical) in
+ let raw = str.slice(digest, 7, str.len(digest)) in
+ let sig = crypto.ed25519_sign(oracle_private_key_hex, raw) in
+ { event: event, event_digest: digest, oracle_signature_hex: sig }
+}
+
+fn verify_event_signature(signed_event, oracle_public_key_hex) {
+ let canonical = json.canonicalize(signed_event.event) in
+ let expected_digest = hash.sha256_text(canonical) in
+ let digest_ok = expected_digest == signed_event.event_digest in
+ let raw = if digest_ok then str.slice(signed_event.event_digest, 7, str.len(signed_event.event_digest)) else "" in
+ let sig_ok = if digest_ok
+   then crypto.ed25519_verify(oracle_public_key_hex, raw, signed_event.oracle_signature_hex)
+   else false in
+ { valid: digest_ok && sig_ok, digest_ok: digest_ok, signature_ok: sig_ok }
+}
+
+// --- Oracle types ---
+let TYPE_REGULATORY   = "regulatory"
+let TYPE_INSPECTION   = "inspection"
+let TYPE_CUSTOMS      = "customs"
+let TYPE_SENSOR       = "sensor"
+let TYPE_CERTIFICATION = "certification"
+let TYPE_RECALL       = "recall"
+let TYPE_WILDCARD     = "*"
+
+let ALL_TYPES = [
+ TYPE_REGULATORY, TYPE_INSPECTION, TYPE_CUSTOMS,
+ TYPE_SENSOR, TYPE_CERTIFICATION, TYPE_RECALL
+]
+
+fn is_known_type(oracle_type) {
+ list.any(ALL_TYPES, fn(t) { t == oracle_type })
+}
+
+export {
+ make_oracle, oracle_digest, sign_oracle, verify_oracle,
+ oracle_active, revoke_oracle,
+ make_oracle_set, oracle_set_digest, sign_oracle_set, verify_oracle_set,
+ add_oracle, remove_oracle,
+ find_oracle, find_by_pubkey, oracles_for_type, oracles_for_jurisdiction,
+ active_oracles, is_authorized, authorization_report,
+ sign_event, verify_event_signature,
+ TYPE_REGULATORY, TYPE_INSPECTION, TYPE_CUSTOMS,
+ TYPE_SENSOR, TYPE_CERTIFICATION, TYPE_RECALL, TYPE_WILDCARD,
+ ALL_TYPES, is_known_type
+}
