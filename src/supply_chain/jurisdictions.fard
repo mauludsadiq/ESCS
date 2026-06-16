@@ -1,0 +1,171 @@
+import("std/list") as list
+import("std/str") as str
+
+// jurisdictions.fard — all known ESCS claim spaces
+// Convention: VERTICAL.AUTHORITY.SCOPE.VERSION
+//
+// Use these constants everywhere — never raw strings.
+
+// --- Pharmaceutical ---
+let PHARMA_FDA_DSCSA_V1      = "PHARMA.FDA.DSCSA.v1"
+let PHARMA_EMA_FMD_V1        = "PHARMA.EMA.FMD.v1"
+let PHARMA_COLD_FDA_V1       = "PHARMA.COLD.FDA.v1"
+let PHARMA_COLD_WHO_V1       = "PHARMA.COLD.WHO.v1"
+let PHARMA_PMDA_V1           = "PHARMA.PMDA.v1"
+let PHARMA_ANVISA_V1         = "PHARMA.ANVISA.v1"
+let PHARMA_MHRA_V1           = "PHARMA.MHRA.v1"
+let PHARMA_RECALL_V1         = "PHARMA.RECALL.v1"
+
+// --- Food ---
+let FOOD_FSMA_V1             = "FOOD.FSMA.v1"
+let FOOD_EU_V1               = "FOOD.EU.v1"
+let FOOD_COLD_V1             = "FOOD.COLD.v1"
+let FOOD_ORGANIC_USDA_V1     = "FOOD.ORGANIC.USDA.v1"
+let FOOD_HALAL_V1            = "FOOD.HALAL.v1"
+let FOOD_KOSHER_V1           = "FOOD.KOSHER.v1"
+let FOOD_RECALL_V1           = "FOOD.RECALL.v1"
+
+// --- Electronics ---
+let ELEC_REACH_V1            = "ELEC.REACH.v1"
+let ELEC_ROHS_V1             = "ELEC.ROHS.v1"
+let ELEC_CONFLICT_V1         = "ELEC.CONFLICT.v1"
+let ELEC_WEEE_V1             = "ELEC.WEEE.v1"
+let ELEC_ORIGIN_V1           = "ELEC.ORIGIN.v1"
+
+// --- Apparel ---
+let APPAREL_LABOR_V1         = "APPAREL.LABOR.v1"
+let APPAREL_ORIGIN_V1        = "APPAREL.ORIGIN.v1"
+let APPAREL_ORGANIC_V1       = "APPAREL.ORGANIC.v1"
+let APPAREL_FAIR_V1          = "APPAREL.FAIR.v1"
+
+// --- Energy ---
+let ENERGY_REC_V1            = "ENERGY.REC.v1"
+let ENERGY_CARBON_V1         = "ENERGY.CARBON.v1"
+let ENERGY_GRID_V1           = "ENERGY.GRID.v1"
+let ENERGY_ISO50001_V1       = "ENERGY.ISO50001.v1"
+
+// --- Cross-vertical ---
+let SUPPLY_CUSTODY_V1        = "SUPPLY.CUSTODY.v1"
+let SUPPLY_INSPECTION_V1     = "SUPPLY.INSPECTION.v1"
+let SUPPLY_CUSTOMS_US_V1     = "SUPPLY.CUSTOMS.US.v1"
+let SUPPLY_CUSTOMS_EU_V1     = "SUPPLY.CUSTOMS.EU.v1"
+let SUPPLY_CUSTOMS_UK_V1     = "SUPPLY.CUSTOMS.UK.v1"
+let SUPPLY_CUSTOMS_CN_V1     = "SUPPLY.CUSTOMS.CN.v1"
+let SUPPLY_CUSTOMS_JP_V1     = "SUPPLY.CUSTOMS.JP.v1"
+let SUPPLY_ISO9001_V1        = "SUPPLY.ISO9001.v1"
+let SUPPLY_ISO28000_V1       = "SUPPLY.ISO28000.v1"
+let SUPPLY_RECALL_V1         = "SUPPLY.RECALL.v1"
+let SUPPLY_SENSOR_V1         = "SUPPLY.SENSOR.v1"
+let SUPPLY_ORACLE_V1         = "SUPPLY.ORACLE.v1"
+let SUPPLY_STATE_V1          = "SUPPLY.STATE.v1"
+let SUPPLY_BATCH_V1          = "SUPPLY.BATCH.v1"
+
+// --- All known spaces ---
+let PHARMA_ALL = [
+  PHARMA_FDA_DSCSA_V1, PHARMA_EMA_FMD_V1, PHARMA_COLD_FDA_V1,
+  PHARMA_COLD_WHO_V1, PHARMA_PMDA_V1, PHARMA_ANVISA_V1,
+  PHARMA_MHRA_V1, PHARMA_RECALL_V1
+]
+
+let FOOD_ALL = [
+  FOOD_FSMA_V1, FOOD_EU_V1, FOOD_COLD_V1, FOOD_ORGANIC_USDA_V1,
+  FOOD_HALAL_V1, FOOD_KOSHER_V1, FOOD_RECALL_V1
+]
+
+let ELEC_ALL = [
+  ELEC_REACH_V1, ELEC_ROHS_V1, ELEC_CONFLICT_V1,
+  ELEC_WEEE_V1, ELEC_ORIGIN_V1
+]
+
+let APPAREL_ALL = [
+  APPAREL_LABOR_V1, APPAREL_ORIGIN_V1,
+  APPAREL_ORGANIC_V1, APPAREL_FAIR_V1
+]
+
+let ENERGY_ALL = [
+  ENERGY_REC_V1, ENERGY_CARBON_V1,
+  ENERGY_GRID_V1, ENERGY_ISO50001_V1
+]
+
+let CROSS_ALL = [
+  SUPPLY_CUSTODY_V1, SUPPLY_INSPECTION_V1,
+  SUPPLY_CUSTOMS_US_V1, SUPPLY_CUSTOMS_EU_V1,
+  SUPPLY_CUSTOMS_UK_V1, SUPPLY_CUSTOMS_CN_V1, SUPPLY_CUSTOMS_JP_V1,
+  SUPPLY_ISO9001_V1, SUPPLY_ISO28000_V1, SUPPLY_RECALL_V1,
+  SUPPLY_SENSOR_V1, SUPPLY_ORACLE_V1, SUPPLY_STATE_V1, SUPPLY_BATCH_V1
+]
+
+let ALL = list.concat([PHARMA_ALL, FOOD_ALL, ELEC_ALL, APPAREL_ALL, ENERGY_ALL, CROSS_ALL])
+
+// --- Predicates ---
+fn is_pharma(cs)     { list.any(PHARMA_ALL,  fn(j) { j == cs }) }
+fn is_food(cs)       { list.any(FOOD_ALL,    fn(j) { j == cs }) }
+fn is_elec(cs)       { list.any(ELEC_ALL,    fn(j) { j == cs }) }
+fn is_apparel(cs)    { list.any(APPAREL_ALL, fn(j) { j == cs }) }
+fn is_energy(cs)     { list.any(ENERGY_ALL,  fn(j) { j == cs }) }
+fn is_cross(cs)      { list.any(CROSS_ALL,   fn(j) { j == cs }) }
+fn is_known(cs)      { list.any(ALL,         fn(j) { j == cs }) }
+
+fn is_recall(cs) {
+  cs == PHARMA_RECALL_V1 || cs == FOOD_RECALL_V1 || cs == SUPPLY_RECALL_V1
+}
+
+fn is_cold_chain(cs) {
+  cs == PHARMA_COLD_FDA_V1 || cs == PHARMA_COLD_WHO_V1 || cs == FOOD_COLD_V1
+}
+
+fn is_customs(cs) {
+  list.any([
+    SUPPLY_CUSTOMS_US_V1, SUPPLY_CUSTOMS_EU_V1, SUPPLY_CUSTOMS_UK_V1,
+    SUPPLY_CUSTOMS_CN_V1, SUPPLY_CUSTOMS_JP_V1
+  ], fn(j) { j == cs })
+}
+
+fn vertical_of(cs) {
+  if is_pharma(cs) then "pharma"
+  else if is_food(cs) then "food"
+  else if is_elec(cs) then "electronics"
+  else if is_apparel(cs) then "apparel"
+  else if is_energy(cs) then "energy"
+  else "cross"
+}
+
+fn authority_of(cs) {
+  let parts = str.split(cs, ".") in
+  if list.len(parts) >= 2 then list.get(parts, 1) ?? "UNKNOWN"
+  else "UNKNOWN"
+}
+
+fn customs_spaces() {
+  [SUPPLY_CUSTOMS_US_V1, SUPPLY_CUSTOMS_EU_V1, SUPPLY_CUSTOMS_UK_V1,
+   SUPPLY_CUSTOMS_CN_V1, SUPPLY_CUSTOMS_JP_V1]
+}
+
+fn recall_spaces() {
+  [PHARMA_RECALL_V1, FOOD_RECALL_V1, SUPPLY_RECALL_V1]
+}
+
+fn cold_chain_spaces() {
+  [PHARMA_COLD_FDA_V1, PHARMA_COLD_WHO_V1, FOOD_COLD_V1]
+}
+
+export {
+  PHARMA_FDA_DSCSA_V1, PHARMA_EMA_FMD_V1, PHARMA_COLD_FDA_V1,
+  PHARMA_COLD_WHO_V1, PHARMA_PMDA_V1, PHARMA_ANVISA_V1,
+  PHARMA_MHRA_V1, PHARMA_RECALL_V1,
+  FOOD_FSMA_V1, FOOD_EU_V1, FOOD_COLD_V1, FOOD_ORGANIC_USDA_V1,
+  FOOD_HALAL_V1, FOOD_KOSHER_V1, FOOD_RECALL_V1,
+  ELEC_REACH_V1, ELEC_ROHS_V1, ELEC_CONFLICT_V1, ELEC_WEEE_V1, ELEC_ORIGIN_V1,
+  APPAREL_LABOR_V1, APPAREL_ORIGIN_V1, APPAREL_ORGANIC_V1, APPAREL_FAIR_V1,
+  ENERGY_REC_V1, ENERGY_CARBON_V1, ENERGY_GRID_V1, ENERGY_ISO50001_V1,
+  SUPPLY_CUSTODY_V1, SUPPLY_INSPECTION_V1,
+  SUPPLY_CUSTOMS_US_V1, SUPPLY_CUSTOMS_EU_V1, SUPPLY_CUSTOMS_UK_V1,
+  SUPPLY_CUSTOMS_CN_V1, SUPPLY_CUSTOMS_JP_V1,
+  SUPPLY_ISO9001_V1, SUPPLY_ISO28000_V1, SUPPLY_RECALL_V1,
+  SUPPLY_SENSOR_V1, SUPPLY_ORACLE_V1, SUPPLY_STATE_V1, SUPPLY_BATCH_V1,
+  PHARMA_ALL, FOOD_ALL, ELEC_ALL, APPAREL_ALL, ENERGY_ALL, CROSS_ALL, ALL,
+  is_pharma, is_food, is_elec, is_apparel, is_energy, is_cross, is_known,
+  is_recall, is_cold_chain, is_customs,
+  vertical_of, authority_of,
+  customs_spaces, recall_spaces, cold_chain_spaces
+}

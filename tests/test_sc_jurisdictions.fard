@@ -1,0 +1,144 @@
+import("std/list") as list
+import("std/str") as str
+import("../src/supply_chain/jurisdictions") as jur
+
+test "ALL contains 42 jurisdictions" {
+  list.len(jur.ALL) == 42
+}
+
+test "PHARMA_ALL contains 8 spaces" {
+  list.len(jur.PHARMA_ALL) == 8
+}
+
+test "FOOD_ALL contains 7 spaces" {
+  list.len(jur.FOOD_ALL) == 7
+}
+
+test "ELEC_ALL contains 5 spaces" {
+  list.len(jur.ELEC_ALL) == 5
+}
+
+test "APPAREL_ALL contains 4 spaces" {
+  list.len(jur.APPAREL_ALL) == 4
+}
+
+test "ENERGY_ALL contains 4 spaces" {
+  list.len(jur.ENERGY_ALL) == 4
+}
+
+test "CROSS_ALL contains 14 spaces" {
+  list.len(jur.CROSS_ALL) == 14
+}
+
+test "is_pharma true for FDA DSCSA" {
+  jur.is_pharma(jur.PHARMA_FDA_DSCSA_V1) == true
+}
+
+test "is_pharma false for food space" {
+  jur.is_pharma(jur.FOOD_FSMA_V1) == false
+}
+
+test "is_food true for FSMA" {
+  jur.is_food(jur.FOOD_FSMA_V1) == true
+}
+
+test "is_elec true for REACH" {
+  jur.is_elec(jur.ELEC_REACH_V1) == true
+}
+
+test "is_apparel true for labor compliance" {
+  jur.is_apparel(jur.APPAREL_LABOR_V1) == true
+}
+
+test "is_energy true for REC" {
+  jur.is_energy(jur.ENERGY_REC_V1) == true
+}
+
+test "is_recall true for pharma recall" {
+  jur.is_recall(jur.PHARMA_RECALL_V1) == true
+}
+
+test "is_recall true for food recall" {
+  jur.is_recall(jur.FOOD_RECALL_V1) == true
+}
+
+test "is_recall true for cross recall" {
+  jur.is_recall(jur.SUPPLY_RECALL_V1) == true
+}
+
+test "is_recall false for custody" {
+  jur.is_recall(jur.SUPPLY_CUSTODY_V1) == false
+}
+
+test "is_cold_chain true for FDA cold" {
+  jur.is_cold_chain(jur.PHARMA_COLD_FDA_V1) == true
+}
+
+test "is_cold_chain true for WHO cold" {
+  jur.is_cold_chain(jur.PHARMA_COLD_WHO_V1) == true
+}
+
+test "is_cold_chain true for food cold" {
+  jur.is_cold_chain(jur.FOOD_COLD_V1) == true
+}
+
+test "is_cold_chain false for non-cold" {
+  jur.is_cold_chain(jur.PHARMA_FDA_DSCSA_V1) == false
+}
+
+test "is_customs true for US customs" {
+  jur.is_customs(jur.SUPPLY_CUSTOMS_US_V1) == true
+}
+
+test "is_customs true for EU customs" {
+  jur.is_customs(jur.SUPPLY_CUSTOMS_EU_V1) == true
+}
+
+test "is_customs false for inspection" {
+  jur.is_customs(jur.SUPPLY_INSPECTION_V1) == false
+}
+
+test "vertical_of pharma space returns pharma" {
+  jur.vertical_of(jur.PHARMA_FDA_DSCSA_V1) == "pharma"
+}
+
+test "vertical_of food space returns food" {
+  jur.vertical_of(jur.FOOD_FSMA_V1) == "food"
+}
+
+test "vertical_of elec space returns electronics" {
+  jur.vertical_of(jur.ELEC_REACH_V1) == "electronics"
+}
+
+test "vertical_of apparel space returns apparel" {
+  jur.vertical_of(jur.APPAREL_LABOR_V1) == "apparel"
+}
+
+test "vertical_of energy space returns energy" {
+  jur.vertical_of(jur.ENERGY_REC_V1) == "energy"
+}
+
+test "is_known true for all spaces" {
+  list.all(jur.ALL, fn(j) { jur.is_known(j) })
+}
+
+test "is_known false for unknown space" {
+  jur.is_known("UNKNOWN.XX.v1") == false
+}
+
+test "customs_spaces returns 5 spaces" {
+  list.len(jur.customs_spaces()) == 5
+}
+
+test "recall_spaces returns 3 spaces" {
+  list.len(jur.recall_spaces()) == 3
+}
+
+test "cold_chain_spaces returns 3 spaces" {
+  list.len(jur.cold_chain_spaces()) == 3
+}
+
+test "no duplicate spaces in ALL" {
+  let deduped = list.dedupe(jur.ALL) in
+  list.len(deduped) == list.len(jur.ALL)
+}
