@@ -1,0 +1,266 @@
+import("std/rec") as rec
+import("std/list") as list
+import("../src/supply_chain/policy") as policy
+import("../src/supply_chain/jurisdictions") as jur
+import("/Users/g.bogans/Downloads/EOS/src/kernel/gate") as gate
+import("/Users/g.bogans/Downloads/EOS/src/kernel/kernel") as eos
+
+let k = eos.new("escs-policy-test-node")
+let now = 1710000000
+
+fn make_claim(claim_space) {
+  let env = eos.mint_claim(k, claim_space, "sc:test:batch-001",
+    "test_event", "{}", [], now) in
+  env.claim
+}
+
+fn eval(claim_space, reputation) {
+  let claim = make_claim(claim_space) in
+  let p = policy.policy_for(claim_space) in
+  gate.eval_with_ctx_json(claim, { reputation: reputation, now: now, policy: p })
+}
+
+// --- Cross-vertical ---
+
+test "custody_policy passes with rep=0" {
+  eval(jur.SUPPLY_CUSTODY_V1, 0).ok == true
+}
+
+test "inspection_policy passes with rep=5" {
+  eval(jur.SUPPLY_INSPECTION_V1, 5).ok == true
+}
+
+test "inspection_policy fails with rep=4" {
+  rec.has(eval(jur.SUPPLY_INSPECTION_V1, 4), "err")
+}
+
+test "recall_policy passes with rep=50" {
+  eval(jur.SUPPLY_RECALL_V1, 50).ok == true
+}
+
+test "recall_policy fails with rep=49" {
+  rec.has(eval(jur.SUPPLY_RECALL_V1, 49), "err")
+}
+
+test "iso9001_policy passes with rep=20" {
+  eval(jur.SUPPLY_ISO9001_V1, 20).ok == true
+}
+
+test "customs_us_policy passes with rep=10" {
+  eval(jur.SUPPLY_CUSTOMS_US_V1, 10).ok == true
+}
+
+test "customs_us_policy fails with rep=9" {
+  rec.has(eval(jur.SUPPLY_CUSTOMS_US_V1, 9), "err")
+}
+
+test "customs_eu_policy passes with rep=10" {
+  eval(jur.SUPPLY_CUSTOMS_EU_V1, 10).ok == true
+}
+
+test "customs_uk_policy passes with rep=10" {
+  eval(jur.SUPPLY_CUSTOMS_UK_V1, 10).ok == true
+}
+
+test "customs_cn_policy passes with rep=10" {
+  eval(jur.SUPPLY_CUSTOMS_CN_V1, 10).ok == true
+}
+
+test "customs_jp_policy passes with rep=10" {
+  eval(jur.SUPPLY_CUSTOMS_JP_V1, 10).ok == true
+}
+
+// --- Pharmaceutical ---
+
+test "pharma_fda_dscsa passes with rep=20" {
+  eval(jur.PHARMA_FDA_DSCSA_V1, 20).ok == true
+}
+
+test "pharma_fda_dscsa fails with rep=19" {
+  rec.has(eval(jur.PHARMA_FDA_DSCSA_V1, 19), "err")
+}
+
+test "pharma_cold_fda passes with rep=10" {
+  eval(jur.PHARMA_COLD_FDA_V1, 10).ok == true
+}
+
+test "pharma_cold_fda fails with rep=9" {
+  rec.has(eval(jur.PHARMA_COLD_FDA_V1, 9), "err")
+}
+
+test "pharma_cold_who passes with rep=10" {
+  eval(jur.PHARMA_COLD_WHO_V1, 10).ok == true
+}
+
+test "pharma_recall fails with rep=49" {
+  rec.has(eval(jur.PHARMA_RECALL_V1, 49), "err")
+}
+
+test "pharma_recall passes with rep=50" {
+  eval(jur.PHARMA_RECALL_V1, 50).ok == true
+}
+
+test "pharma_ema_fmd passes with rep=20" {
+  eval(jur.PHARMA_EMA_FMD_V1, 20).ok == true
+}
+
+test "pharma_pmda passes with rep=20" {
+  eval(jur.PHARMA_PMDA_V1, 20).ok == true
+}
+
+test "pharma_anvisa passes with rep=20" {
+  eval(jur.PHARMA_ANVISA_V1, 20).ok == true
+}
+
+test "pharma_mhra passes with rep=20" {
+  eval(jur.PHARMA_MHRA_V1, 20).ok == true
+}
+
+// --- Food ---
+
+test "food_fsma passes with rep=10" {
+  eval(jur.FOOD_FSMA_V1, 10).ok == true
+}
+
+test "food_cold passes with rep=5" {
+  eval(jur.FOOD_COLD_V1, 5).ok == true
+}
+
+test "food_cold fails with rep=4" {
+  rec.has(eval(jur.FOOD_COLD_V1, 4), "err")
+}
+
+test "food_organic passes with rep=20" {
+  eval(jur.FOOD_ORGANIC_USDA_V1, 20).ok == true
+}
+
+test "food_halal passes with rep=20" {
+  eval(jur.FOOD_HALAL_V1, 20).ok == true
+}
+
+test "food_kosher passes with rep=20" {
+  eval(jur.FOOD_KOSHER_V1, 20).ok == true
+}
+
+test "food_recall passes with rep=50" {
+  eval(jur.FOOD_RECALL_V1, 50).ok == true
+}
+
+test "food_recall fails with rep=49" {
+  rec.has(eval(jur.FOOD_RECALL_V1, 49), "err")
+}
+
+// --- Electronics ---
+
+test "elec_reach passes with rep=20" {
+  eval(jur.ELEC_REACH_V1, 20).ok == true
+}
+
+test "elec_rohs passes with rep=20" {
+  eval(jur.ELEC_ROHS_V1, 20).ok == true
+}
+
+test "elec_conflict passes with rep=20" {
+  eval(jur.ELEC_CONFLICT_V1, 20).ok == true
+}
+
+test "elec_weee passes with rep=10" {
+  eval(jur.ELEC_WEEE_V1, 10).ok == true
+}
+
+test "elec_origin passes with rep=10" {
+  eval(jur.ELEC_ORIGIN_V1, 10).ok == true
+}
+
+// --- Apparel ---
+
+test "apparel_labor passes with rep=20" {
+  eval(jur.APPAREL_LABOR_V1, 20).ok == true
+}
+
+test "apparel_origin passes with rep=10" {
+  eval(jur.APPAREL_ORIGIN_V1, 10).ok == true
+}
+
+test "apparel_organic passes with rep=20" {
+  eval(jur.APPAREL_ORGANIC_V1, 20).ok == true
+}
+
+test "apparel_fair passes with rep=20" {
+  eval(jur.APPAREL_FAIR_V1, 20).ok == true
+}
+
+// --- Energy ---
+
+test "energy_rec passes with rep=20" {
+  eval(jur.ENERGY_REC_V1, 20).ok == true
+}
+
+test "energy_carbon passes with rep=20" {
+  eval(jur.ENERGY_CARBON_V1, 20).ok == true
+}
+
+test "energy_grid passes with rep=10" {
+  eval(jur.ENERGY_GRID_V1, 10).ok == true
+}
+
+test "energy_iso50001 passes with rep=20" {
+  eval(jur.ENERGY_ISO50001_V1, 20).ok == true
+}
+
+// --- Policy router ---
+
+test "policy_for custody returns custody_policy" {
+  let p = policy.policy_for(jur.SUPPLY_CUSTODY_V1) in
+  list.len(p.rules) == 3
+}
+
+test "policy_for cold chain returns pharma_cold_fda_policy" {
+  let p = policy.policy_for(jur.PHARMA_COLD_FDA_V1) in
+  list.len(p.rules) == 4
+}
+
+test "min_reputation_for custody is 0" {
+  policy.min_reputation_for(jur.SUPPLY_CUSTODY_V1) == 0
+}
+
+test "min_reputation_for recall is 50" {
+  policy.min_reputation_for(jur.SUPPLY_RECALL_V1) == 50
+}
+
+test "min_reputation_for pharma_fda is 20" {
+  policy.min_reputation_for(jur.PHARMA_FDA_DSCSA_V1) == 20
+}
+
+test "min_reputation_for cold_fda is 10" {
+  policy.min_reputation_for(jur.PHARMA_COLD_FDA_V1) == 10
+}
+
+test "max_age_for cold_fda is 3600" {
+  policy.max_age_for(jur.PHARMA_COLD_FDA_V1) == 3600
+}
+
+test "max_age_for customs_us is 86400" {
+  policy.max_age_for(jur.SUPPLY_CUSTOMS_US_V1) == 86400
+}
+
+test "max_age_for custody is 0 (no age check)" {
+  policy.max_age_for(jur.SUPPLY_CUSTODY_V1) == 0
+}
+
+test "requires_age_check true for cold chain" {
+  policy.requires_age_check(jur.PHARMA_COLD_FDA_V1) == true
+}
+
+test "requires_age_check false for custody" {
+  policy.requires_age_check(jur.SUPPLY_CUSTODY_V1) == false
+}
+
+test "sensor_policy has AgeMax 300" {
+  policy.max_age_for(jur.SUPPLY_SENSOR_V1) == 300
+}
+
+test "open_policy passes any known jurisdiction with rep=0" {
+  let claim = make_claim(jur.FOOD_HALAL_V1) in
+  gate.eval_with_ctx_json(claim, { reputation: 0, now: now, policy: policy.open_policy }).ok == true
+}

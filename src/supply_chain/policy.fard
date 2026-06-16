@@ -1,0 +1,482 @@
+import("std/list") as list
+import("std/rec") as rec
+import("./jurisdictions") as jur
+
+// policy.fard — gate policies for all ESCS verticals
+//
+// Every policy is a GateVM program: a list of ops that evaluates
+// a claim against a context { reputation, now, allowed_jurisdictions }.
+//
+// Policy hierarchy (strictest to most open):
+//   recall_policy         RepMin(50) — only highest-rep nodes issue recalls
+//   cold_chain_policy     RepMin(10) + AgeMax(3600) — fresh, trusted
+//   customs_policy        RepMin(10) + AgeMax(86400)
+//   certification_policy  RepMin(20)
+//   inspection_policy     RepMin(5)
+//   sensor_policy         RepMin(1) + AgeMax(300) — sensor readings stale fast
+//   custody_policy        RepMin(0) — any participant
+//   open_policy           JurAllow(all) — dev/test only
+//
+// Per-vertical policies add JurAllow constraints on top of base reputation gates.
+
+// --- Base reputation policies ---
+
+let rep_0  = { rules: [{ op: "RepMin", val: 0  }] }
+let rep_1  = { rules: [{ op: "RepMin", val: 1  }] }
+let rep_5  = { rules: [{ op: "RepMin", val: 5  }] }
+let rep_10 = { rules: [{ op: "RepMin", val: 10 }] }
+let rep_20 = { rules: [{ op: "RepMin", val: 20 }] }
+let rep_50 = { rules: [{ op: "RepMin", val: 50 }] }
+
+// --- Cross-vertical policies ---
+
+let custody_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.CUSTODY.v1"] },
+   { op: "RepMin", val: 0 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let inspection_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.INSPECTION.v1"] },
+   { op: "RepMin", val: 5 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let sensor_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.SENSOR.v1"] },
+   { op: "RepMin", val: 1 },
+   { op: "AgeMax", seconds: 300 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let recall_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.RECALL.v1", "PHARMA.RECALL.v1", "FOOD.RECALL.v1"] },
+   { op: "RepMin", val: 50 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let iso9001_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.ISO9001.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let iso28000_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.ISO28000.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+// --- Customs policies (per authority) ---
+
+let customs_us_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.CUSTOMS.US.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "AgeMax", seconds: 86400 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let customs_eu_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.CUSTOMS.EU.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "AgeMax", seconds: 86400 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let customs_uk_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.CUSTOMS.UK.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "AgeMax", seconds: 86400 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let customs_cn_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.CUSTOMS.CN.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "AgeMax", seconds: 86400 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let customs_jp_policy = {
+ rules: [
+   { op: "JurAllow", list: ["SUPPLY.CUSTOMS.JP.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "AgeMax", seconds: 86400 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+// --- Pharmaceutical policies ---
+
+let pharma_fda_dscsa_policy = {
+ rules: [
+   { op: "JurAllow", list: ["PHARMA.FDA.DSCSA.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "AgeMax", seconds: 86400 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let pharma_ema_fmd_policy = {
+ rules: [
+   { op: "JurAllow", list: ["PHARMA.EMA.FMD.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "AgeMax", seconds: 86400 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let pharma_cold_fda_policy = {
+ rules: [
+   { op: "JurAllow", list: ["PHARMA.COLD.FDA.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "AgeMax", seconds: 3600 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let pharma_cold_who_policy = {
+ rules: [
+   { op: "JurAllow", list: ["PHARMA.COLD.WHO.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "AgeMax", seconds: 3600 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let pharma_recall_policy = {
+ rules: [
+   { op: "JurAllow", list: ["PHARMA.RECALL.v1"] },
+   { op: "RepMin", val: 50 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let pharma_pmda_policy = {
+ rules: [
+   { op: "JurAllow", list: ["PHARMA.PMDA.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let pharma_anvisa_policy = {
+ rules: [
+   { op: "JurAllow", list: ["PHARMA.ANVISA.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let pharma_mhra_policy = {
+ rules: [
+   { op: "JurAllow", list: ["PHARMA.MHRA.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+// --- Food policies ---
+
+let food_fsma_policy = {
+ rules: [
+   { op: "JurAllow", list: ["FOOD.FSMA.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "AgeMax", seconds: 86400 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let food_eu_policy = {
+ rules: [
+   { op: "JurAllow", list: ["FOOD.EU.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "AgeMax", seconds: 86400 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let food_cold_policy = {
+ rules: [
+   { op: "JurAllow", list: ["FOOD.COLD.v1"] },
+   { op: "RepMin", val: 5 },
+   { op: "AgeMax", seconds: 3600 },
+   { op: "Glb", n: 3 }
+ ]
+}
+
+let food_organic_policy = {
+ rules: [
+   { op: "JurAllow", list: ["FOOD.ORGANIC.USDA.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let food_halal_policy = {
+ rules: [
+   { op: "JurAllow", list: ["FOOD.HALAL.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let food_kosher_policy = {
+ rules: [
+   { op: "JurAllow", list: ["FOOD.KOSHER.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let food_recall_policy = {
+ rules: [
+   { op: "JurAllow", list: ["FOOD.RECALL.v1"] },
+   { op: "RepMin", val: 50 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+// --- Electronics policies ---
+
+let elec_reach_policy = {
+ rules: [
+   { op: "JurAllow", list: ["ELEC.REACH.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let elec_rohs_policy = {
+ rules: [
+   { op: "JurAllow", list: ["ELEC.ROHS.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let elec_conflict_policy = {
+ rules: [
+   { op: "JurAllow", list: ["ELEC.CONFLICT.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let elec_weee_policy = {
+ rules: [
+   { op: "JurAllow", list: ["ELEC.WEEE.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let elec_origin_policy = {
+ rules: [
+   { op: "JurAllow", list: ["ELEC.ORIGIN.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+// --- Apparel policies ---
+
+let apparel_labor_policy = {
+ rules: [
+   { op: "JurAllow", list: ["APPAREL.LABOR.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let apparel_origin_policy = {
+ rules: [
+   { op: "JurAllow", list: ["APPAREL.ORIGIN.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let apparel_organic_policy = {
+ rules: [
+   { op: "JurAllow", list: ["APPAREL.ORGANIC.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let apparel_fair_policy = {
+ rules: [
+   { op: "JurAllow", list: ["APPAREL.FAIR.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+// --- Energy policies ---
+
+let energy_rec_policy = {
+ rules: [
+   { op: "JurAllow", list: ["ENERGY.REC.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let energy_carbon_policy = {
+ rules: [
+   { op: "JurAllow", list: ["ENERGY.CARBON.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let energy_grid_policy = {
+ rules: [
+   { op: "JurAllow", list: ["ENERGY.GRID.v1"] },
+   { op: "RepMin", val: 10 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+let energy_iso50001_policy = {
+ rules: [
+   { op: "JurAllow", list: ["ENERGY.ISO50001.v1"] },
+   { op: "RepMin", val: 20 },
+   { op: "Glb", n: 2 }
+ ]
+}
+
+// --- Open policy (dev/test) ---
+
+let open_policy = {
+ rules: [
+   { op: "JurAllow", list: [
+     "SUPPLY.CUSTODY.v1", "SUPPLY.INSPECTION.v1", "SUPPLY.SENSOR.v1",
+     "SUPPLY.RECALL.v1", "SUPPLY.ISO9001.v1", "SUPPLY.ISO28000.v1",
+     "SUPPLY.CUSTOMS.US.v1", "SUPPLY.CUSTOMS.EU.v1", "SUPPLY.CUSTOMS.UK.v1",
+     "SUPPLY.CUSTOMS.CN.v1", "SUPPLY.CUSTOMS.JP.v1",
+     "SUPPLY.ORACLE.v1", "SUPPLY.STATE.v1", "SUPPLY.BATCH.v1",
+     "PHARMA.FDA.DSCSA.v1", "PHARMA.EMA.FMD.v1", "PHARMA.COLD.FDA.v1",
+     "PHARMA.COLD.WHO.v1", "PHARMA.PMDA.v1", "PHARMA.ANVISA.v1",
+     "PHARMA.MHRA.v1", "PHARMA.RECALL.v1",
+     "FOOD.FSMA.v1", "FOOD.EU.v1", "FOOD.COLD.v1", "FOOD.ORGANIC.USDA.v1",
+     "FOOD.HALAL.v1", "FOOD.KOSHER.v1", "FOOD.RECALL.v1",
+     "ELEC.REACH.v1", "ELEC.ROHS.v1", "ELEC.CONFLICT.v1",
+     "ELEC.WEEE.v1", "ELEC.ORIGIN.v1",
+     "APPAREL.LABOR.v1", "APPAREL.ORIGIN.v1", "APPAREL.ORGANIC.v1", "APPAREL.FAIR.v1",
+     "ENERGY.REC.v1", "ENERGY.CARBON.v1", "ENERGY.GRID.v1", "ENERGY.ISO50001.v1"
+   ]}
+ ]
+}
+
+// --- Policy router ---
+// Returns the correct policy for a given claim space
+
+fn policy_for(claim_space) {
+ match claim_space {
+   "SUPPLY.CUSTODY.v1"       => custody_policy,
+   "SUPPLY.INSPECTION.v1"    => inspection_policy,
+   "SUPPLY.SENSOR.v1"        => sensor_policy,
+   "SUPPLY.RECALL.v1"        => recall_policy,
+   "SUPPLY.ISO9001.v1"       => iso9001_policy,
+   "SUPPLY.ISO28000.v1"      => iso28000_policy,
+   "SUPPLY.CUSTOMS.US.v1"    => customs_us_policy,
+   "SUPPLY.CUSTOMS.EU.v1"    => customs_eu_policy,
+   "SUPPLY.CUSTOMS.UK.v1"    => customs_uk_policy,
+   "SUPPLY.CUSTOMS.CN.v1"    => customs_cn_policy,
+   "SUPPLY.CUSTOMS.JP.v1"    => customs_jp_policy,
+   "PHARMA.FDA.DSCSA.v1"     => pharma_fda_dscsa_policy,
+   "PHARMA.EMA.FMD.v1"       => pharma_ema_fmd_policy,
+   "PHARMA.COLD.FDA.v1"      => pharma_cold_fda_policy,
+   "PHARMA.COLD.WHO.v1"      => pharma_cold_who_policy,
+   "PHARMA.RECALL.v1"        => pharma_recall_policy,
+   "PHARMA.PMDA.v1"          => pharma_pmda_policy,
+   "PHARMA.ANVISA.v1"        => pharma_anvisa_policy,
+   "PHARMA.MHRA.v1"          => pharma_mhra_policy,
+   "FOOD.FSMA.v1"            => food_fsma_policy,
+   "FOOD.EU.v1"              => food_eu_policy,
+   "FOOD.COLD.v1"            => food_cold_policy,
+   "FOOD.ORGANIC.USDA.v1"    => food_organic_policy,
+   "FOOD.HALAL.v1"           => food_halal_policy,
+   "FOOD.KOSHER.v1"          => food_kosher_policy,
+   "FOOD.RECALL.v1"          => food_recall_policy,
+   "ELEC.REACH.v1"           => elec_reach_policy,
+   "ELEC.ROHS.v1"            => elec_rohs_policy,
+   "ELEC.CONFLICT.v1"        => elec_conflict_policy,
+   "ELEC.WEEE.v1"            => elec_weee_policy,
+   "ELEC.ORIGIN.v1"          => elec_origin_policy,
+   "APPAREL.LABOR.v1"        => apparel_labor_policy,
+   "APPAREL.ORIGIN.v1"       => apparel_origin_policy,
+   "APPAREL.ORGANIC.v1"      => apparel_organic_policy,
+   "APPAREL.FAIR.v1"         => apparel_fair_policy,
+   "ENERGY.REC.v1"           => energy_rec_policy,
+   "ENERGY.CARBON.v1"        => energy_carbon_policy,
+   "ENERGY.GRID.v1"          => energy_grid_policy,
+   "ENERGY.ISO50001.v1"      => energy_iso50001_policy,
+   _                         => open_policy
+ }
+}
+
+fn min_reputation_for(claim_space) {
+ let policy = policy_for(claim_space) in
+ let rep_ops = list.filter(policy.rules, fn(r) { r.op == "RepMin" }) in
+ if list.len(rep_ops) > 0
+ then rec.getOr(list.head(rep_ops), "val", 0)
+ else 0
+}
+
+fn max_age_for(claim_space) {
+ let policy = policy_for(claim_space) in
+ let age_ops = list.filter(policy.rules, fn(r) { r.op == "AgeMax" }) in
+ if list.len(age_ops) > 0
+ then rec.getOr(list.head(age_ops), "seconds", 0)
+ else 0
+}
+
+fn requires_age_check(claim_space) {
+ max_age_for(claim_space) > 0
+}
+
+export {
+ rep_0, rep_1, rep_5, rep_10, rep_20, rep_50,
+ custody_policy, inspection_policy, sensor_policy, recall_policy,
+ iso9001_policy, iso28000_policy,
+ customs_us_policy, customs_eu_policy, customs_uk_policy,
+ customs_cn_policy, customs_jp_policy,
+ pharma_fda_dscsa_policy, pharma_ema_fmd_policy,
+ pharma_cold_fda_policy, pharma_cold_who_policy,
+ pharma_recall_policy, pharma_pmda_policy,
+ pharma_anvisa_policy, pharma_mhra_policy,
+ food_fsma_policy, food_eu_policy, food_cold_policy,
+ food_organic_policy, food_halal_policy, food_kosher_policy,
+ food_recall_policy,
+ elec_reach_policy, elec_rohs_policy, elec_conflict_policy,
+ elec_weee_policy, elec_origin_policy,
+ apparel_labor_policy, apparel_origin_policy,
+ apparel_organic_policy, apparel_fair_policy,
+ energy_rec_policy, energy_carbon_policy,
+ energy_grid_policy, energy_iso50001_policy,
+ open_policy,
+ policy_for, min_reputation_for, max_age_for, requires_age_check
+}
