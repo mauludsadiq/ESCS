@@ -1,0 +1,404 @@
+import("std/json") as json
+import("std/str") as str
+import("std/rec") as rec
+import("std/list") as list
+import("std/type") as type
+import("./jurisdictions") as jur
+
+// event.fard — all ESCS supply chain event types
+//
+// Every supply chain action is a typed, validated event record.
+// Events are signed by the EOS kernel and published as claims.
+//
+// Event kinds:
+//   Batch lifecycle:    batch_created, batch_split, batch_merge
+//   Custody:            custody_transfer
+//   Inspection:         inspection_passed, inspection_failed
+//   Customs:            customs_cleared, customs_held
+//   Cold chain:         temperature_log, temperature_breach
+//   Certification:      certification_issued, certification_revoked
+//   Recall:             recall_issued, recall_acknowledged, recall_resolved
+//   Sensor:             sensor_reading
+//   Location:           location_update
+//   Origin:             origin_attested
+
+// --- Batch lifecycle ---
+
+fn batch_created(batch_id, product_code, quantity, unit, origin_location,
+                producer_id, lot_number, manufacture_date, expiry_date) {
+ {
+   kind:             "batch_created",
+   batch_id:         batch_id,
+   product_code:     product_code,
+   quantity:         quantity,
+   unit:             unit,
+   origin_location:  origin_location,
+   producer_id:      producer_id,
+   lot_number:       lot_number,
+   manufacture_date: manufacture_date,
+   expiry_date:      expiry_date
+ }
+}
+
+fn batch_split(parent_batch_id, child_batch_ids, quantities, actor_id) {
+ {
+   kind:             "batch_split",
+   parent_batch_id:  parent_batch_id,
+   child_batch_ids:  child_batch_ids,
+   quantities:       quantities,
+   actor_id:         actor_id
+ }
+}
+
+fn batch_merge(source_batch_ids, target_batch_id, quantities, actor_id) {
+ {
+   kind:             "batch_merge",
+   source_batch_ids: source_batch_ids,
+   target_batch_id:  target_batch_id,
+   quantities:       quantities,
+   actor_id:         actor_id
+ }
+}
+
+// --- Custody ---
+
+fn custody_transfer(batch_id, from_party, to_party, location,
+                   quantity, unit, handoff_method, actor_id) {
+ {
+   kind:           "custody_transfer",
+   batch_id:       batch_id,
+   from_party:     from_party,
+   to_party:       to_party,
+   location:       location,
+   quantity:       quantity,
+   unit:           unit,
+   handoff_method: handoff_method,
+   actor_id:       actor_id
+ }
+}
+
+// --- Inspection ---
+
+fn inspection_passed(batch_id, inspector_id, inspection_type,
+                    location, standards, notes) {
+ {
+   kind:            "inspection_passed",
+   batch_id:        batch_id,
+   inspector_id:    inspector_id,
+   inspection_type: inspection_type,
+   location:        location,
+   standards:       standards,
+   notes:           notes
+ }
+}
+
+fn inspection_failed(batch_id, inspector_id, inspection_type,
+                    location, failure_codes, evidence_refs) {
+ {
+   kind:            "inspection_failed",
+   batch_id:        batch_id,
+   inspector_id:    inspector_id,
+   inspection_type: inspection_type,
+   location:        location,
+   failure_codes:   failure_codes,
+   evidence_refs:   evidence_refs
+ }
+}
+
+// --- Customs ---
+
+fn customs_cleared(batch_id, customs_authority, clearance_ref,
+                  port_of_entry, destination_country, actor_id) {
+ {
+   kind:                "customs_cleared",
+   batch_id:            batch_id,
+   customs_authority:   customs_authority,
+   clearance_ref:       clearance_ref,
+   port_of_entry:       port_of_entry,
+   destination_country: destination_country,
+   actor_id:            actor_id
+ }
+}
+
+fn customs_held(batch_id, customs_authority, hold_ref,
+               port_of_entry, reason, evidence_refs) {
+ {
+   kind:              "customs_held",
+   batch_id:          batch_id,
+   customs_authority: customs_authority,
+   hold_ref:          hold_ref,
+   port_of_entry:     port_of_entry,
+   reason:            reason,
+   evidence_refs:     evidence_refs
+ }
+}
+
+// --- Cold chain ---
+
+fn temperature_log(batch_id, sensor_id, location,
+                  temp_min_c, temp_max_c, temp_avg_c,
+                  window_start, window_end, reading_count) {
+ {
+   kind:          "temperature_log",
+   batch_id:      batch_id,
+   sensor_id:     sensor_id,
+   location:      location,
+   temp_min_c:    temp_min_c,
+   temp_max_c:    temp_max_c,
+   temp_avg_c:    temp_avg_c,
+   window_start:  window_start,
+   window_end:    window_end,
+   reading_count: reading_count
+ }
+}
+
+fn temperature_breach(batch_id, sensor_id, location,
+                     temp_c, threshold_min_c, threshold_max_c,
+                     breach_timestamp, duration_secs, evidence_ref) {
+ {
+   kind:              "temperature_breach",
+   batch_id:          batch_id,
+   sensor_id:         sensor_id,
+   location:          location,
+   temp_c:            temp_c,
+   threshold_min_c:   threshold_min_c,
+   threshold_max_c:   threshold_max_c,
+   breach_timestamp:  breach_timestamp,
+   duration_secs:     duration_secs,
+   evidence_ref:      evidence_ref
+ }
+}
+
+// --- Certification ---
+
+fn certification_issued(batch_id, cert_type, certifier_id,
+                       cert_ref, valid_from, valid_until, scope) {
+ {
+   kind:        "certification_issued",
+   batch_id:    batch_id,
+   cert_type:   cert_type,
+   certifier_id: certifier_id,
+   cert_ref:    cert_ref,
+   valid_from:  valid_from,
+   valid_until: valid_until,
+   scope:       scope
+ }
+}
+
+fn certification_revoked(batch_id, cert_type, certifier_id,
+                        cert_ref, reason, evidence_refs) {
+ {
+   kind:         "certification_revoked",
+   batch_id:     batch_id,
+   cert_type:    cert_type,
+   certifier_id: certifier_id,
+   cert_ref:     cert_ref,
+   reason:       reason,
+   evidence_refs: evidence_refs
+ }
+}
+
+// --- Recall ---
+
+fn recall_issued(recall_id, affected_batch_ids, affected_lot_numbers,
+                product_code, severity, reason, issuer_id,
+                instructions, regulatory_ref) {
+ {
+   kind:                 "recall_issued",
+   recall_id:            recall_id,
+   affected_batch_ids:   affected_batch_ids,
+   affected_lot_numbers: affected_lot_numbers,
+   product_code:         product_code,
+   severity:             severity,
+   reason:               reason,
+   issuer_id:            issuer_id,
+   instructions:         instructions,
+   regulatory_ref:       regulatory_ref
+ }
+}
+
+fn recall_acknowledged(recall_id, batch_id, holder_id,
+                      quantity_held, location, action_plan) {
+ {
+   kind:          "recall_acknowledged",
+   recall_id:     recall_id,
+   batch_id:      batch_id,
+   holder_id:     holder_id,
+   quantity_held: quantity_held,
+   location:      location,
+   action_plan:   action_plan
+ }
+}
+
+fn recall_resolved(recall_id, batch_id, holder_id,
+                  resolution, quantity_destroyed,
+                  quantity_returned, evidence_refs) {
+ {
+   kind:               "recall_resolved",
+   recall_id:          recall_id,
+   batch_id:           batch_id,
+   holder_id:          holder_id,
+   resolution:         resolution,
+   quantity_destroyed: quantity_destroyed,
+   quantity_returned:  quantity_returned,
+   evidence_refs:      evidence_refs
+ }
+}
+
+// --- Sensor ---
+
+fn sensor_reading(batch_id, sensor_id, sensor_type, location,
+                 value, unit, threshold_min, threshold_max, in_range) {
+ {
+   kind:          "sensor_reading",
+   batch_id:      batch_id,
+   sensor_id:     sensor_id,
+   sensor_type:   sensor_type,
+   location:      location,
+   value:         value,
+   unit:          unit,
+   threshold_min: threshold_min,
+   threshold_max: threshold_max,
+   in_range:      in_range
+ }
+}
+
+// --- Location ---
+
+fn location_update(batch_id, actor_id, location,
+                  coordinates, facility_id, scan_method) {
+ {
+   kind:        "location_update",
+   batch_id:    batch_id,
+   actor_id:    actor_id,
+   location:    location,
+   coordinates: coordinates,
+   facility_id: facility_id,
+   scan_method: scan_method
+ }
+}
+
+// --- Origin ---
+
+fn origin_attested(batch_id, certifier_id, country_of_origin,
+                  region, facility_id, standards, evidence_refs) {
+ {
+   kind:              "origin_attested",
+   batch_id:          batch_id,
+   certifier_id:      certifier_id,
+   country_of_origin: country_of_origin,
+   region:            region,
+   facility_id:       facility_id,
+   standards:         standards,
+   evidence_refs:     evidence_refs
+ }
+}
+
+// --- Helpers ---
+
+fn event_kind(event) { event.kind }
+fn event_batch_id(event) { rec.getOr(event, "batch_id", null) }
+
+fn is_recall_event(event) {
+ let k = event.kind in
+ k == "recall_issued" || k == "recall_acknowledged" || k == "recall_resolved"
+}
+
+fn is_cold_chain_event(event) {
+ let k = event.kind in
+ k == "temperature_log" || k == "temperature_breach"
+}
+
+fn is_custody_event(event) {
+ let k = event.kind in
+ k == "custody_transfer" || k == "batch_created" ||
+ k == "batch_split" || k == "batch_merge"
+}
+
+fn is_inspection_event(event) {
+ let k = event.kind in
+ k == "inspection_passed" || k == "inspection_failed"
+}
+
+fn is_customs_event(event) {
+ let k = event.kind in
+ k == "customs_cleared" || k == "customs_held"
+}
+
+fn is_certification_event(event) {
+ let k = event.kind in
+ k == "certification_issued" || k == "certification_revoked"
+}
+
+fn claim_space_for(event) {
+ match event.kind {
+   "batch_created"          => jur.SUPPLY_BATCH_V1,
+   "batch_split"            => jur.SUPPLY_BATCH_V1,
+   "batch_merge"            => jur.SUPPLY_BATCH_V1,
+   "custody_transfer"       => jur.SUPPLY_CUSTODY_V1,
+   "inspection_passed"      => jur.SUPPLY_INSPECTION_V1,
+   "inspection_failed"      => jur.SUPPLY_INSPECTION_V1,
+   "customs_cleared"        => jur.SUPPLY_CUSTOMS_US_V1,
+   "customs_held"           => jur.SUPPLY_CUSTOMS_US_V1,
+   "temperature_log"        => jur.SUPPLY_SENSOR_V1,
+   "temperature_breach"     => jur.SUPPLY_SENSOR_V1,
+   "certification_issued"   => jur.SUPPLY_ISO9001_V1,
+   "certification_revoked"  => jur.SUPPLY_ISO9001_V1,
+   "recall_issued"          => jur.SUPPLY_RECALL_V1,
+   "recall_acknowledged"    => jur.SUPPLY_RECALL_V1,
+   "recall_resolved"        => jur.SUPPLY_RECALL_V1,
+   "sensor_reading"         => jur.SUPPLY_SENSOR_V1,
+   "location_update"        => jur.SUPPLY_STATE_V1,
+   "origin_attested"        => jur.SUPPLY_ORACLE_V1,
+   _                        => jur.SUPPLY_STATE_V1
+ }
+}
+
+fn subject_for(event) {
+ let batch = rec.getOr(event, "batch_id", "unknown") in
+ str.concat(["sc:", event.kind, ":", batch])
+}
+
+fn severity_level(severity) {
+ match severity {
+   "class_i"   => 3,
+   "class_ii"  => 2,
+   "class_iii" => 1,
+   _           => 0
+ }
+}
+
+fn is_critical_recall(event) {
+ event.kind == "recall_issued" && severity_level(rec.getOr(event, "severity", "")) >= 3
+}
+
+let ALL_KINDS = [
+ "batch_created", "batch_split", "batch_merge",
+ "custody_transfer",
+ "inspection_passed", "inspection_failed",
+ "customs_cleared", "customs_held",
+ "temperature_log", "temperature_breach",
+ "certification_issued", "certification_revoked",
+ "recall_issued", "recall_acknowledged", "recall_resolved",
+ "sensor_reading", "location_update", "origin_attested"
+]
+
+fn is_known_kind(kind) {
+ list.any(ALL_KINDS, fn(k) { k == kind })
+}
+
+export {
+ batch_created, batch_split, batch_merge,
+ custody_transfer,
+ inspection_passed, inspection_failed,
+ customs_cleared, customs_held,
+ temperature_log, temperature_breach,
+ certification_issued, certification_revoked,
+ recall_issued, recall_acknowledged, recall_resolved,
+ sensor_reading, location_update, origin_attested,
+ event_kind, event_batch_id,
+ is_recall_event, is_cold_chain_event, is_custody_event,
+ is_inspection_event, is_customs_event, is_certification_event,
+ claim_space_for, subject_for, severity_level, is_critical_recall,
+ ALL_KINDS, is_known_kind
+}

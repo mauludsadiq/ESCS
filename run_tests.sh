@@ -22,6 +22,7 @@ echo "=== ESCS Test Suite ==="
 echo ""
 
 run_test tests/test_sc_jurisdictions.fard
+run_test tests/test_sc_event.fard
 
 echo ""
 echo "========================="

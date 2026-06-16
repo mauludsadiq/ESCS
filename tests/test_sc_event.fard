@@ -1,0 +1,196 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("../src/supply_chain/event") as ev
+import("../src/supply_chain/jurisdictions") as jur
+
+let batch_id = "batch:LOT-2025-0042"
+let actor    = "party:warehouse-a"
+let inspector = "inspector:fda-cert-0012"
+let sensor   = "sensor:cold-unit-7"
+
+test "batch_created has correct kind" {
+  let e = ev.batch_created(batch_id, "DRUG-001", 1000, "units",
+    "Chicago, IL", actor, "LOT-2025-0042", 1710000000, 1741536000) in
+  e.kind == "batch_created"
+}
+
+test "batch_created encodes all fields" {
+  let e = ev.batch_created(batch_id, "DRUG-001", 1000, "units",
+    "Chicago, IL", actor, "LOT-2025-0042", 1710000000, 1741536000) in
+  e.quantity == 1000 && e.product_code == "DRUG-001"
+}
+
+test "batch_split has correct kind" {
+  let e = ev.batch_split(batch_id, ["batch:child-a", "batch:child-b"],
+    [500, 500], actor) in
+  e.kind == "batch_split" && list.len(e.child_batch_ids) == 2
+}
+
+test "batch_merge has correct kind" {
+  let e = ev.batch_merge(["batch:src-a", "batch:src-b"],
+    "batch:merged", [500, 500], actor) in
+  e.kind == "batch_merge"
+}
+
+test "custody_transfer has correct kind and parties" {
+  let e = ev.custody_transfer(batch_id, "party:a", "party:b",
+    "Chicago O'Hare", 1000, "units", "truck", actor) in
+  e.kind == "custody_transfer" && e.from_party == "party:a" && e.to_party == "party:b"
+}
+
+test "inspection_passed has correct kind" {
+  let e = ev.inspection_passed(batch_id, inspector, "fda_visual",
+    "Chicago, IL", ["FDA-21CFR"], "no defects") in
+  e.kind == "inspection_passed"
+}
+
+test "inspection_failed has correct kind and failure codes" {
+  let e = ev.inspection_failed(batch_id, inspector, "fda_visual",
+    "Chicago, IL", ["TEMP-001", "SEAL-003"], []) in
+  e.kind == "inspection_failed" && list.len(e.failure_codes) == 2
+}
+
+test "customs_cleared has correct kind" {
+  let e = ev.customs_cleared(batch_id, "CBP", "CBP-2025-99",
+    "JFK", "US", actor) in
+  e.kind == "customs_cleared" && e.destination_country == "US"
+}
+
+test "customs_held has correct kind and reason" {
+  let e = ev.customs_held(batch_id, "CBP", "HOLD-2025-01",
+    "JFK", "missing documentation", []) in
+  e.kind == "customs_held" && e.reason == "missing documentation"
+}
+
+test "temperature_log has correct kind and readings" {
+  let e = ev.temperature_log(batch_id, sensor, "Chicago, IL",
+    2.1, 7.8, 4.5, 1710000000, 1710003600, 360) in
+  e.kind == "temperature_log" && e.temp_min_c == 2.1 && e.temp_max_c == 7.8
+}
+
+test "temperature_breach has correct kind" {
+  let e = ev.temperature_breach(batch_id, sensor, "Chicago, IL",
+    12.5, 2.0, 8.0, 1710001800, 300, "log:sha256:abc") in
+  e.kind == "temperature_breach" && e.temp_c == 12.5
+}
+
+test "certification_issued has correct kind" {
+  let e = ev.certification_issued(batch_id, "halal", "certifier:001",
+    "HALAL-2025-001", 1710000000, 1741536000, "full batch") in
+  e.kind == "certification_issued" && e.cert_type == "halal"
+}
+
+test "certification_revoked has correct kind" {
+  let e = ev.certification_revoked(batch_id, "halal", "certifier:001",
+    "HALAL-2025-001", "ingredient substitution", []) in
+  e.kind == "certification_revoked"
+}
+
+test "recall_issued has correct kind and severity" {
+  let e = ev.recall_issued("recall:001", [batch_id], ["LOT-2025-0042"],
+    "DRUG-001", "class_i", "contamination detected", "FDA",
+    "destroy immediately", "FDA-RECALL-2025-001") in
+  e.kind == "recall_issued" && e.severity == "class_i"
+}
+
+test "recall_acknowledged has correct kind" {
+  let e = ev.recall_acknowledged("recall:001", batch_id, actor,
+    1000, "Chicago, IL", "quarantine and destroy") in
+  e.kind == "recall_acknowledged"
+}
+
+test "recall_resolved has correct kind" {
+  let e = ev.recall_resolved("recall:001", batch_id, actor,
+    "destroyed", 1000, 0, ["evidence:sha256:abc"]) in
+  e.kind == "recall_resolved" && e.quantity_destroyed == 1000
+}
+
+test "sensor_reading has correct kind and in_range" {
+  let e = ev.sensor_reading(batch_id, sensor, "temperature",
+    "Chicago, IL", 4.5, "celsius", 2.0, 8.0, true) in
+  e.kind == "sensor_reading" && e.in_range == true
+}
+
+test "location_update has correct kind" {
+  let e = ev.location_update(batch_id, actor, "Chicago, IL",
+    { lat: 41.8781, lng: -87.6298 }, "facility:ord-cold-01", "rfid") in
+  e.kind == "location_update"
+}
+
+test "origin_attested has correct kind" {
+  let e = ev.origin_attested(batch_id, "certifier:001", "US",
+    "Illinois", "facility:chi-01", ["FDA-21CFR"], []) in
+  e.kind == "origin_attested" && e.country_of_origin == "US"
+}
+
+test "is_recall_event true for recall_issued" {
+  let e = ev.recall_issued("r1", [batch_id], [], "P1", "class_i", "reason", "FDA", "destroy", "ref") in
+  ev.is_recall_event(e) == true
+}
+
+test "is_recall_event false for custody" {
+  let e = ev.custody_transfer(batch_id, "a", "b", "loc", 100, "units", "truck", actor) in
+  ev.is_recall_event(e) == false
+}
+
+test "is_cold_chain_event true for temperature_breach" {
+  let e = ev.temperature_breach(batch_id, sensor, "loc", 12.5, 2.0, 8.0, 0, 300, "ref") in
+  ev.is_cold_chain_event(e) == true
+}
+
+test "is_custody_event true for custody_transfer" {
+  let e = ev.custody_transfer(batch_id, "a", "b", "loc", 100, "units", "truck", actor) in
+  ev.is_custody_event(e) == true
+}
+
+test "is_critical_recall true for class_i" {
+  let e = ev.recall_issued("r1", [batch_id], [], "P1", "class_i", "reason", "FDA", "destroy", "ref") in
+  ev.is_critical_recall(e) == true
+}
+
+test "is_critical_recall false for class_iii" {
+  let e = ev.recall_issued("r1", [batch_id], [], "P1", "class_iii", "reason", "FDA", "monitor", "ref") in
+  ev.is_critical_recall(e) == false
+}
+
+test "claim_space_for custody_transfer is SUPPLY_CUSTODY_V1" {
+  let e = ev.custody_transfer(batch_id, "a", "b", "loc", 100, "units", "truck", actor) in
+  ev.claim_space_for(e) == jur.SUPPLY_CUSTODY_V1
+}
+
+test "claim_space_for recall_issued is SUPPLY_RECALL_V1" {
+  let e = ev.recall_issued("r1", [batch_id], [], "P1", "class_i", "reason", "FDA", "destroy", "ref") in
+  ev.claim_space_for(e) == jur.SUPPLY_RECALL_V1
+}
+
+test "claim_space_for temperature_breach is SUPPLY_SENSOR_V1" {
+  let e = ev.temperature_breach(batch_id, sensor, "loc", 12.5, 2.0, 8.0, 0, 300, "ref") in
+  ev.claim_space_for(e) == jur.SUPPLY_SENSOR_V1
+}
+
+test "subject_for encodes kind and batch_id" {
+  let e = ev.custody_transfer(batch_id, "a", "b", "loc", 100, "units", "truck", actor) in
+  let subject = ev.subject_for(e) in
+  str.starts_with(subject, "sc:custody_transfer:")
+}
+
+test "ALL_KINDS contains 18 event types" {
+  list.len(ev.ALL_KINDS) == 18
+}
+
+test "is_known_kind true for batch_created" {
+  ev.is_known_kind("batch_created") == true
+}
+
+test "is_known_kind false for unknown" {
+  ev.is_known_kind("unknown_event") == false
+}
+
+test "severity_level class_i is 3" {
+  ev.severity_level("class_i") == 3
+}
+
+test "severity_level class_iii is 1" {
+  ev.severity_level("class_iii") == 1
+}
