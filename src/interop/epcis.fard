@@ -1,0 +1,486 @@
+import("std/json") as json
+import("std/str") as str
+import("std/rec") as rec
+import("std/list") as list
+import("std/hash") as hash
+
+// epcis.fard — GS1 EPCIS 2.0 bridge for ESCS
+//
+// Bidirectional mapping between ESCS events and EPCIS 2.0 events.
+//
+// EPCIS 2.0 is the lingua franca of supply chain traceability.
+// DSCSA (pharma), FSMA (food), and EU DPP all require EPCIS.
+// This bridge makes ESCS a cryptographic audit layer underneath
+// existing EPCIS implementations — not a replacement.
+//
+// ESCS -> EPCIS: convert ESCS events to EPCIS 2.0 JSON-LD
+// EPCIS -> ESCS: ingest EPCIS events and convert to ESCS events
+//
+// EPCIS 2.0 event structure:
+//   {
+//     "@context": ["https://ref.gs1.org/standards/epcis/2.0.0/epcis-context.jsonld"],
+//     epcis_type: "EPCISDocument",
+//     schemaVersion: "2.0",
+//     creationDate: "2025-01-01T00:00:00Z",
+//     epcisBody: {
+//       eventList: [ ... ]
+//     }
+//   }
+
+// --- EPCIS constants ---
+
+let EPCIS_CONTEXT    = "https://ref.gs1.org/standards/epcis/2.0.0/epcis-context.jsonld"
+let EPCIS_VERSION    = "2.0"
+let EPCIS_NS         = "https://ref.gs1.org/standards/epcis/"
+
+// GS1 business steps
+let BIZ_STEP_COMMISSIONING   = "https://ref.gs1.org/cbv/BizStep-commissioning"
+let BIZ_STEP_SHIPPING        = "https://ref.gs1.org/cbv/BizStep-shipping"
+let BIZ_STEP_RECEIVING       = "https://ref.gs1.org/cbv/BizStep-receiving"
+let BIZ_STEP_INSPECTING      = "https://ref.gs1.org/cbv/BizStep-inspecting"
+let BIZ_STEP_ACCEPTING       = "https://ref.gs1.org/cbv/BizStep-accepting"
+let BIZ_STEP_REJECTING       = "https://ref.gs1.org/cbv/BizStep-rejecting"
+let BIZ_STEP_CUSTOMS         = "https://ref.gs1.org/cbv/BizStep-entering_exiting"
+let BIZ_STEP_SENSOR          = "https://ref.gs1.org/cbv/BizStep-sensor_reporting"
+let BIZ_STEP_TRANSITING      = "https://ref.gs1.org/cbv/BizStep-transiting"
+let BIZ_STEP_DESTROYING      = "https://ref.gs1.org/cbv/BizStep-destroying"
+
+// GS1 dispositions
+let DISP_ACTIVE              = "https://ref.gs1.org/cbv/Disp-active"
+let DISP_RECALLED            = "https://ref.gs1.org/cbv/Disp-recalled"
+let DISP_DESTROYED           = "https://ref.gs1.org/cbv/Disp-destroyed"
+let DISP_IN_TRANSIT          = "https://ref.gs1.org/cbv/Disp-in_transit"
+let DISP_NON_CONFORMANT      = "https://ref.gs1.org/cbv/Disp-non_conformant"
+let DISP_NEEDS_REPLACEMENT   = "https://ref.gs1.org/cbv/Disp-needs_replacement"
+
+// EPCIS actions
+let ACTION_ADD     = "ADD"
+let ACTION_OBSERVE = "OBSERVE"
+let ACTION_DELETE  = "DELETE"
+
+// --- EPC (Electronic Product Code) formatting ---
+// ESCS batch_id -> GS1 EPC URI
+// Convention: urn:epc:id:sgtin:<company>.<item>.<serial>
+// We encode batch_id as a URI-safe EPC
+
+fn batch_to_epc(batch_id) {
+  str.concat(["urn:epc:escs:batch:", batch_id])
+}
+
+fn lot_to_epc(lot_number, product_code) {
+  str.concat(["urn:epc:id:lgtin:escs.", product_code, ".", lot_number])
+}
+
+fn party_to_pgln(party_id) {
+  str.concat(["urn:epc:id:pgln:escs.", party_id])
+}
+
+fn location_to_sgln(location, facility_id) {
+  let loc = if str.len(facility_id) > 0 then facility_id else location in
+  str.concat(["urn:epc:id:sgln:escs.", loc])
+}
+
+fn unix_to_iso(unix_secs) {
+  // Basic ISO 8601 — FARD doesn't have date formatting so we approximate
+  // Real implementations should use proper date arithmetic
+  str.concat([str.from(unix_secs), "Z"])
+}
+
+// --- ESCS -> EPCIS event conversion ---
+
+fn escs_to_epcis_event(escs_event, timestamp_unix_secs) {
+  let kind = escs_event.kind in
+  match kind {
+    "batch_created" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_ADD,
+        bizStep: BIZ_STEP_COMMISSIONING,
+        disposition: DISP_ACTIVE,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        lotList: [lot_to_epc(
+          rec.getOr(escs_event, "lot_number", ""),
+          rec.getOr(escs_event, "product_code", "")
+        )],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "origin_location", ""), "") },
+        bizLocation: { id: location_to_sgln(
+          rec.getOr(escs_event, "origin_location", ""), "") },
+        ilmd: {
+          "cbvmda:lotNumber": rec.getOr(escs_event, "lot_number", ""),
+          "cbvmda:itemExpirationDate": unix_to_iso(
+            rec.getOr(escs_event, "expiry_date", 0)),
+          "escs:producerId": rec.getOr(escs_event, "producer_id", ""),
+          "escs:batchId": rec.getOr(escs_event, "batch_id", "")
+        }
+      },
+
+    "custody_transfer" =>
+      {
+        epcis_type: "TransactionEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_SHIPPING,
+        disposition: DISP_IN_TRANSIT,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "location", ""), "") },
+        bizLocation: { id: location_to_sgln(
+          rec.getOr(escs_event, "location", ""), "") },
+        sourceList: [{
+          epcis_type: "urn:epcglobal:cbv:sdt:owning_party",
+          source: party_to_pgln(rec.getOr(escs_event, "from_party", ""))
+        }],
+        destinationList: [{
+          epcis_type: "urn:epcglobal:cbv:sdt:owning_party",
+          destination: party_to_pgln(rec.getOr(escs_event, "to_party", ""))
+        }],
+        quantityList: [{
+          epcClass: batch_to_epc(rec.getOr(escs_event, "batch_id", "")),
+          quantity: rec.getOr(escs_event, "quantity", 0),
+          uom: rec.getOr(escs_event, "unit", "EA")
+        }],
+        "escs:handoffMethod": rec.getOr(escs_event, "handoff_method", "")
+      },
+
+    "inspection_passed" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_INSPECTING,
+        disposition: DISP_ACTIVE,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "location", ""), "") },
+        "escs:inspectorId": rec.getOr(escs_event, "inspector_id", ""),
+        "escs:standards": rec.getOr(escs_event, "standards", []),
+        "escs:notes": rec.getOr(escs_event, "notes", ""),
+        "escs:result": "passed"
+      },
+
+    "inspection_failed" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_INSPECTING,
+        disposition: DISP_NON_CONFORMANT,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "location", ""), "") },
+        "escs:inspectorId": rec.getOr(escs_event, "inspector_id", ""),
+        "escs:failureCodes": rec.getOr(escs_event, "failure_codes", []),
+        "escs:result": "failed"
+      },
+
+    "customs_cleared" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_CUSTOMS,
+        disposition: DISP_ACTIVE,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "port_of_entry", ""), "") },
+        "escs:customsAuthority": rec.getOr(escs_event, "customs_authority", ""),
+        "escs:clearanceRef": rec.getOr(escs_event, "clearance_ref", ""),
+        "escs:destinationCountry": rec.getOr(escs_event, "destination_country", "")
+      },
+
+    "customs_held" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_CUSTOMS,
+        disposition: DISP_NON_CONFORMANT,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "port_of_entry", ""), "") },
+        "escs:customsAuthority": rec.getOr(escs_event, "customs_authority", ""),
+        "escs:holdRef": rec.getOr(escs_event, "hold_ref", ""),
+        "escs:reason": rec.getOr(escs_event, "reason", "")
+      },
+
+    "temperature_log" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_SENSOR,
+        disposition: DISP_ACTIVE,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "location", ""),
+          rec.getOr(escs_event, "sensor_id", "")) },
+        sensorElementList: [{
+          sensorMetadata: {
+            time: unix_to_iso(timestamp_unix_secs),
+            deviceID: rec.getOr(escs_event, "sensor_id", ""),
+            startTime: unix_to_iso(rec.getOr(escs_event, "window_start", 0)),
+            endTime: unix_to_iso(rec.getOr(escs_event, "window_end", 0))
+          },
+          sensorReport: [
+            { epcis_type: "gs1:Temperature", minValue: rec.getOr(escs_event, "temp_min_c", 0),
+              maxValue: rec.getOr(escs_event, "temp_max_c", 0),
+              meanValue: rec.getOr(escs_event, "temp_avg_c", 0),
+              uom: "CEL" }
+          ]
+        }],
+        "escs:readingCount": rec.getOr(escs_event, "reading_count", 0)
+      },
+
+    "temperature_breach" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_SENSOR,
+        disposition: DISP_NON_CONFORMANT,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "location", ""),
+          rec.getOr(escs_event, "sensor_id", "")) },
+        sensorElementList: [{
+          sensorMetadata: {
+            time: unix_to_iso(rec.getOr(escs_event, "breach_timestamp", 0)),
+            deviceID: rec.getOr(escs_event, "sensor_id", "")
+          },
+          sensorReport: [
+            { epcis_type: "gs1:Temperature",
+              value: rec.getOr(escs_event, "temp_c", 0),
+              uom: "CEL",
+              exception: "TEMPERATURE_OUT_OF_RANGE",
+              minValue: rec.getOr(escs_event, "threshold_min_c", 0),
+              maxValue: rec.getOr(escs_event, "threshold_max_c", 0) }
+          ]
+        }],
+        "escs:durationSecs": rec.getOr(escs_event, "duration_secs", 0),
+        "escs:evidenceRef": rec.getOr(escs_event, "evidence_ref", "")
+      },
+
+    "certification_issued" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_ACCEPTING,
+        disposition: DISP_ACTIVE,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        certificationList: [{
+          certificationAgency: rec.getOr(escs_event, "certifier_id", ""),
+          certificationStandard: rec.getOr(escs_event, "cert_type", ""),
+          certificationValue: rec.getOr(escs_event, "cert_ref", ""),
+          certificationIdentification: rec.getOr(escs_event, "cert_ref", "")
+        }],
+        "escs:validFrom": unix_to_iso(rec.getOr(escs_event, "valid_from", 0)),
+        "escs:validUntil": unix_to_iso(rec.getOr(escs_event, "valid_until", 0))
+      },
+
+    "recall_issued" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_DELETE,
+        bizStep: BIZ_STEP_DESTROYING,
+        disposition: DISP_RECALLED,
+        epcList: list.map(
+          rec.getOr(escs_event, "affected_batch_ids", []),
+          fn(b) { batch_to_epc(b) }
+        ),
+        "escs:recallId": rec.getOr(escs_event, "recall_id", ""),
+        "escs:severity": rec.getOr(escs_event, "severity", ""),
+        "escs:reason": rec.getOr(escs_event, "reason", ""),
+        "escs:regulatoryRef": rec.getOr(escs_event, "regulatory_ref", ""),
+        "escs:instructions": rec.getOr(escs_event, "instructions", "")
+      },
+
+    "recall_resolved" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_DELETE,
+        bizStep: BIZ_STEP_DESTROYING,
+        disposition: DISP_DESTROYED,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        "escs:recallId": rec.getOr(escs_event, "recall_id", ""),
+        "escs:resolution": rec.getOr(escs_event, "resolution", ""),
+        "escs:quantityDestroyed": rec.getOr(escs_event, "quantity_destroyed", 0),
+        "escs:quantityReturned": rec.getOr(escs_event, "quantity_returned", 0)
+      },
+
+    "sensor_reading" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_SENSOR,
+        disposition: if rec.getOr(escs_event, "in_range", true) then DISP_ACTIVE else DISP_NON_CONFORMANT,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        sensorElementList: [{
+          sensorMetadata: {
+            time: unix_to_iso(timestamp_unix_secs),
+            deviceID: rec.getOr(escs_event, "sensor_id", "")
+          },
+          sensorReport: [{
+            epcis_type: str.concat(["gs1:", rec.getOr(escs_event, "sensor_type", "Temperature")]),
+            value: rec.getOr(escs_event, "value", 0),
+            uom: rec.getOr(escs_event, "unit", ""),
+            minValue: rec.getOr(escs_event, "threshold_min", 0),
+            maxValue: rec.getOr(escs_event, "threshold_max", 0)
+          }]
+        }]
+      },
+
+    "origin_attested" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_ACCEPTING,
+        disposition: DISP_ACTIVE,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "region", ""),
+          rec.getOr(escs_event, "facility_id", "")) },
+        "escs:countryOfOrigin": rec.getOr(escs_event, "country_of_origin", ""),
+        "escs:certifierId": rec.getOr(escs_event, "certifier_id", ""),
+        "escs:standards": rec.getOr(escs_event, "standards", [])
+      },
+
+    "location_update" =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        eventTimeZoneOffset: "+00:00",
+        action: ACTION_OBSERVE,
+        bizStep: BIZ_STEP_TRANSITING,
+        disposition: DISP_IN_TRANSIT,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        readPoint: { id: location_to_sgln(
+          rec.getOr(escs_event, "location", ""),
+          rec.getOr(escs_event, "facility_id", "")) },
+        "escs:coordinates": rec.getOr(escs_event, "coordinates", {}),
+        "escs:scanMethod": rec.getOr(escs_event, "scan_method", "")
+      },
+
+    _ =>
+      {
+        epcis_type: "ObjectEvent",
+        eventTime: unix_to_iso(timestamp_unix_secs),
+        action: ACTION_OBSERVE,
+        epcList: [batch_to_epc(rec.getOr(escs_event, "batch_id", ""))],
+        "escs:eventKind": kind
+      }
+  }
+}
+
+// --- EPCIS document wrapper ---
+
+fn to_epcis_document(events_with_timestamps) {
+  let epcis_events = list.map(events_with_timestamps, fn(et) {
+    escs_to_epcis_event(et.event, et.timestamp_unix_secs)
+  }) in
+  {
+    "@context": [EPCIS_CONTEXT, { escs: "https://escs.supply/vocab/1.0/" }],
+    epcis_type: "EPCISDocument",
+    schemaVersion: EPCIS_VERSION,
+    epcisBody: {
+      eventList: epcis_events
+    }
+  }
+}
+
+// --- EPCIS -> ESCS ingest ---
+
+fn epcis_action_to_escs(epcis_event) {
+  let biz_step = rec.getOr(epcis_event, "bizStep", "") in
+  let action   = rec.getOr(epcis_event, "action", "") in
+  let ev_type  = rec.getOr(epcis_event, "epcis_type", "") in
+  let disp     = rec.getOr(epcis_event, "disposition", "") in
+
+  if str.ends_with(biz_step, "commissioning") then "batch_created"
+  else if str.ends_with(biz_step, "shipping") then "custody_transfer"
+  else if str.ends_with(biz_step, "receiving") then "custody_transfer"
+  else if str.ends_with(biz_step, "inspecting") && disp == DISP_ACTIVE then "inspection_passed"
+  else if str.ends_with(biz_step, "inspecting") then "inspection_failed"
+  else if str.ends_with(biz_step, "entering_exiting") && disp == DISP_ACTIVE then "customs_cleared"
+  else if str.ends_with(biz_step, "entering_exiting") then "customs_held"
+  else if str.ends_with(biz_step, "sensor_reporting") && disp == DISP_NON_CONFORMANT then "temperature_breach"
+  else if str.ends_with(biz_step, "sensor_reporting") then "temperature_log"
+  else if str.ends_with(biz_step, "destroying") && disp == DISP_RECALLED then "recall_issued"
+  else if str.ends_with(biz_step, "destroying") && disp == DISP_DESTROYED then "recall_resolved"
+  else if str.ends_with(biz_step, "accepting") then "certification_issued"
+  else if str.ends_with(biz_step, "transiting") then "location_update"
+  else "unknown"
+}
+
+fn epc_to_batch_id(epc) {
+  let prefix = "urn:epc:escs:batch:" in
+  if str.starts_with(epc, prefix) then
+    str.slice(epc, str.len(prefix), str.len(epc))
+  else epc
+}
+
+fn epcis_to_escs_event(epcis_event) {
+  let kind = epcis_action_to_escs(epcis_event) in
+  let epcs = rec.getOr(epcis_event, "epcList", []) in
+  let batch_id = if list.len(epcs) > 0
+    then epc_to_batch_id(list.head(epcs))
+    else "" in
+  let sources = rec.getOr(epcis_event, "sourceList", []) in
+  let dests   = rec.getOr(epcis_event, "destinationList", []) in
+  let sensors = rec.getOr(epcis_event, "sensorElementList", []) in
+  let read_point = rec.getOr(rec.getOr(epcis_event, "readPoint", {}), "id", "") in
+  {
+    kind:         kind,
+    batch_id:     batch_id,
+    from_party:   if list.len(sources) > 0 then rec.getOr(list.head(sources), "source", "") else "",
+    to_party:     if list.len(dests) > 0 then rec.getOr(list.head(dests), "destination", "") else "",
+    location:     read_point,
+    sensor_data:  sensors,
+    raw_epcis:    epcis_event
+  }
+}
+
+fn ingest_epcis_document(epcis_doc) {
+  let body   = rec.getOr(epcis_doc, "epcisBody", {}) in
+  let events = rec.getOr(body, "eventList", []) in
+  list.map(events, fn(e) { epcis_to_escs_event(e) })
+}
+
+// --- Digest for EPCIS event (for linking to ESCS claim) ---
+
+fn epcis_event_digest(epcis_event) {
+  hash.sha256_text(json.encode(epcis_event))
+}
+
+export {
+  EPCIS_CONTEXT, EPCIS_VERSION,
+  BIZ_STEP_COMMISSIONING, BIZ_STEP_SHIPPING, BIZ_STEP_RECEIVING,
+  BIZ_STEP_INSPECTING, BIZ_STEP_ACCEPTING, BIZ_STEP_REJECTING,
+  BIZ_STEP_CUSTOMS, BIZ_STEP_SENSOR, BIZ_STEP_TRANSITING, BIZ_STEP_DESTROYING,
+  DISP_ACTIVE, DISP_RECALLED, DISP_DESTROYED, DISP_IN_TRANSIT,
+  DISP_NON_CONFORMANT, DISP_NEEDS_REPLACEMENT,
+  ACTION_ADD, ACTION_OBSERVE, ACTION_DELETE,
+  batch_to_epc, lot_to_epc, party_to_pgln, location_to_sgln,
+  escs_to_epcis_event, to_epcis_document,
+  epcis_to_escs_event, ingest_epcis_document,
+  epcis_action_to_escs, epc_to_batch_id, epcis_event_digest
+}

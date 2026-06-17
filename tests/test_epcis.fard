@@ -1,0 +1,312 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("std/json") as json
+import("../src/interop/epcis") as epcis
+import("../src/supply_chain/event") as ev
+
+let batch_id = "batch:LOT-EPCIS-2025-001"
+let now = 1710000000
+
+let batch_event = ev.batch_created(
+  batch_id, "DRUG-001", 10000, "units",
+  "Chicago, IL", "party:producer", "LOT-001",
+  now, now + 31536000
+)
+
+let custody_event = ev.custody_transfer(
+  batch_id, "party:producer", "party:shipper",
+  "Chicago O'Hare", 10000, "units", "truck", "actor:001"
+)
+
+let inspection_event = ev.inspection_passed(
+  batch_id, "inspector:fda-001", "fda_gmp",
+  "Chicago, IL", ["FDA-21CFR"], "all clear"
+)
+
+let inspection_fail = ev.inspection_failed(
+  batch_id, "inspector:fda-001", "fda_gmp",
+  "Chicago, IL", ["TEMP-001"], ["evidence:sha256:abc"]
+)
+
+let customs_event = ev.customs_cleared(
+  batch_id, "CBP", "CBP-2025-001", "JFK", "US", "actor:cbp"
+)
+
+let customs_hold = ev.customs_held(
+  batch_id, "CBP", "HOLD-001", "JFK", "missing docs", []
+)
+
+let temp_log = ev.temperature_log(
+  batch_id, "sensor:007", "Chicago Cold Storage",
+  2.1, 7.8, 4.5, now, now + 3600, 360
+)
+
+let temp_breach = ev.temperature_breach(
+  batch_id, "sensor:007", "Chicago Cold Storage",
+  11.2, 2.0, 8.0, now + 1800, 600, "log:sha256:abc"
+)
+
+let cert_event = ev.certification_issued(
+  batch_id, "halal", "certifier:001",
+  "HALAL-2025-001", now, now + 31536000, "full batch"
+)
+
+let recall_event = ev.recall_issued(
+  "recall:001", [batch_id], ["LOT-001"],
+  "DRUG-001", "class_i", "contamination",
+  "oracle:fda", "destroy", "FDA-2025-001"
+)
+
+let recall_resolved = ev.recall_resolved(
+  "recall:001", batch_id, "party:shipper",
+  "destroyed", 10000, 0, []
+)
+
+let sensor_event = ev.sensor_reading(
+  batch_id, "sensor:007", "temperature",
+  "Chicago", 4.5, "C", 2.0, 8.0, true
+)
+
+let origin_event = ev.origin_attested(
+  batch_id, "certifier:001", "US", "Illinois",
+  "facility:chi-01", ["FDA-21CFR"], []
+)
+
+let location_event = ev.location_update(
+  batch_id, "actor:001", "Chicago, IL",
+  { lat: 41.8781, lng: -87.6298 }, "facility:ord-01", "rfid"
+)
+
+// --- EPC formatting ---
+
+test "batch_to_epc starts with urn:epc:escs:batch:" {
+  str.starts_with(epcis.batch_to_epc(batch_id), "urn:epc:escs:batch:")
+}
+
+test "batch_to_epc encodes batch_id" {
+  str.ends_with(epcis.batch_to_epc(batch_id), batch_id)
+}
+
+test "epc_to_batch_id round-trips" {
+  let epc = epcis.batch_to_epc(batch_id) in
+  epcis.epc_to_batch_id(epc) == batch_id
+}
+
+test "lot_to_epc encodes lot and product" {
+  let epc = epcis.lot_to_epc("LOT-001", "DRUG-001") in
+  str.starts_with(epc, "urn:epc:id:lgtin:")
+}
+
+test "party_to_pgln encodes party" {
+  let pgln = epcis.party_to_pgln("party:producer") in
+  str.starts_with(pgln, "urn:epc:id:pgln:")
+}
+
+// --- ESCS -> EPCIS conversion ---
+
+test "batch_created converts to ObjectEvent ADD" {
+  let e = epcis.escs_to_epcis_event(batch_event, now) in
+  e.epcis_type == "ObjectEvent" && e.action == epcis.ACTION_ADD
+}
+
+test "batch_created has commissioning bizStep" {
+  let e = epcis.escs_to_epcis_event(batch_event, now) in
+  str.ends_with(e.bizStep, "commissioning")
+}
+
+test "batch_created has ACTIVE disposition" {
+  let e = epcis.escs_to_epcis_event(batch_event, now) in
+  e.disposition == epcis.DISP_ACTIVE
+}
+
+test "batch_created epcList contains batch EPC" {
+  let e = epcis.escs_to_epcis_event(batch_event, now) in
+  list.len(e.epcList) == 1 &&
+  str.starts_with(list.head(e.epcList), "urn:epc:escs:batch:")
+}
+
+test "custody_transfer converts to TransactionEvent" {
+  let e = epcis.escs_to_epcis_event(custody_event, now) in
+  e.epcis_type == "TransactionEvent"
+}
+
+test "custody_transfer has shipping bizStep" {
+  let e = epcis.escs_to_epcis_event(custody_event, now) in
+  str.ends_with(e.bizStep, "shipping")
+}
+
+test "custody_transfer has IN_TRANSIT disposition" {
+  let e = epcis.escs_to_epcis_event(custody_event, now) in
+  e.disposition == epcis.DISP_IN_TRANSIT
+}
+
+test "custody_transfer has sourceList and destinationList" {
+  let e = epcis.escs_to_epcis_event(custody_event, now) in
+  list.len(e.sourceList) == 1 && list.len(e.destinationList) == 1
+}
+
+test "inspection_passed converts to ObjectEvent OBSERVE" {
+  let e = epcis.escs_to_epcis_event(inspection_event, now) in
+  e.epcis_type == "ObjectEvent" && e.action == epcis.ACTION_OBSERVE
+}
+
+test "inspection_passed has ACTIVE disposition" {
+  let e = epcis.escs_to_epcis_event(inspection_event, now) in
+  e.disposition == epcis.DISP_ACTIVE
+}
+
+test "inspection_failed has NON_CONFORMANT disposition" {
+  let e = epcis.escs_to_epcis_event(inspection_fail, now) in
+  e.disposition == epcis.DISP_NON_CONFORMANT
+}
+
+test "customs_cleared has ACTIVE disposition" {
+  let e = epcis.escs_to_epcis_event(customs_event, now) in
+  e.disposition == epcis.DISP_ACTIVE
+}
+
+test "customs_held has NON_CONFORMANT disposition" {
+  let e = epcis.escs_to_epcis_event(customs_hold, now) in
+  e.disposition == epcis.DISP_NON_CONFORMANT
+}
+
+test "temperature_log has sensorElementList" {
+  let e = epcis.escs_to_epcis_event(temp_log, now) in
+  list.len(e.sensorElementList) == 1
+}
+
+test "temperature_log disposition is ACTIVE" {
+  let e = epcis.escs_to_epcis_event(temp_log, now) in
+  e.disposition == epcis.DISP_ACTIVE
+}
+
+test "temperature_breach disposition is NON_CONFORMANT" {
+  let e = epcis.escs_to_epcis_event(temp_breach, now) in
+  e.disposition == epcis.DISP_NON_CONFORMANT
+}
+
+test "temperature_breach has sensor exception" {
+  let e = epcis.escs_to_epcis_event(temp_breach, now) in
+  let sensors = e.sensorElementList in
+  let report = rec.getOr(list.head(sensors), "sensorReport", []) in
+  rec.getOr(list.head(report), "exception", "") == "TEMPERATURE_OUT_OF_RANGE"
+}
+
+test "certification_issued has certificationList" {
+  let e = epcis.escs_to_epcis_event(cert_event, now) in
+  list.len(e.certificationList) == 1
+}
+
+test "recall_issued converts to ObjectEvent DELETE" {
+  let e = epcis.escs_to_epcis_event(recall_event, now) in
+  e.epcis_type == "ObjectEvent" && e.action == epcis.ACTION_DELETE
+}
+
+test "recall_issued has RECALLED disposition" {
+  let e = epcis.escs_to_epcis_event(recall_event, now) in
+  e.disposition == epcis.DISP_RECALLED
+}
+
+test "recall_resolved has DESTROYED disposition" {
+  let e = epcis.escs_to_epcis_event(recall_resolved, now) in
+  e.disposition == epcis.DISP_DESTROYED
+}
+
+test "sensor_reading has sensorElementList" {
+  let e = epcis.escs_to_epcis_event(sensor_event, now) in
+  list.len(e.sensorElementList) == 1
+}
+
+test "origin_attested has ACTIVE disposition" {
+  let e = epcis.escs_to_epcis_event(origin_event, now) in
+  e.disposition == epcis.DISP_ACTIVE
+}
+
+test "location_update has IN_TRANSIT disposition" {
+  let e = epcis.escs_to_epcis_event(location_event, now) in
+  e.disposition == epcis.DISP_IN_TRANSIT
+}
+
+// --- EPCIS document ---
+
+test "to_epcis_document has correct context" {
+  let events = [
+    { event: batch_event, timestamp_unix_secs: now },
+    { event: custody_event, timestamp_unix_secs: now + 3600 }
+  ] in
+  let doc = epcis.to_epcis_document(events) in
+  doc.epcis_type == "EPCISDocument" && doc.schemaVersion == "2.0"
+}
+
+test "to_epcis_document eventList has correct count" {
+  let events = [
+    { event: batch_event, timestamp_unix_secs: now },
+    { event: custody_event, timestamp_unix_secs: now + 3600 },
+    { event: temp_breach, timestamp_unix_secs: now + 7200 }
+  ] in
+  let doc = epcis.to_epcis_document(events) in
+  list.len(doc.epcisBody.eventList) == 3
+}
+
+// --- EPCIS -> ESCS ingest ---
+
+test "epcis_action_to_escs commissioning -> batch_created" {
+  let e = { bizStep: epcis.BIZ_STEP_COMMISSIONING, action: epcis.ACTION_ADD, epcis_type: "ObjectEvent", disposition: epcis.DISP_ACTIVE } in
+  epcis.epcis_action_to_escs(e) == "batch_created"
+}
+
+test "epcis_action_to_escs shipping -> custody_transfer" {
+  let e = { bizStep: epcis.BIZ_STEP_SHIPPING, action: epcis.ACTION_OBSERVE, epcis_type: "TransactionEvent", disposition: epcis.DISP_IN_TRANSIT } in
+  epcis.epcis_action_to_escs(e) == "custody_transfer"
+}
+
+test "epcis_action_to_escs inspecting+active -> inspection_passed" {
+  let e = { bizStep: epcis.BIZ_STEP_INSPECTING, action: epcis.ACTION_OBSERVE, epcis_type: "ObjectEvent", disposition: epcis.DISP_ACTIVE } in
+  epcis.epcis_action_to_escs(e) == "inspection_passed"
+}
+
+test "epcis_action_to_escs inspecting+non_conformant -> inspection_failed" {
+  let e = { bizStep: epcis.BIZ_STEP_INSPECTING, action: epcis.ACTION_OBSERVE, epcis_type: "ObjectEvent", disposition: epcis.DISP_NON_CONFORMANT } in
+  epcis.epcis_action_to_escs(e) == "inspection_failed"
+}
+
+test "epcis_action_to_escs destroying+recalled -> recall_issued" {
+  let e = { bizStep: epcis.BIZ_STEP_DESTROYING, action: epcis.ACTION_DELETE, epcis_type: "ObjectEvent", disposition: epcis.DISP_RECALLED } in
+  epcis.epcis_action_to_escs(e) == "recall_issued"
+}
+
+test "epcis_to_escs_event extracts batch_id from epcList" {
+  let epcis_event = epcis.escs_to_epcis_event(batch_event, now) in
+  let back = epcis.epcis_to_escs_event(epcis_event) in
+  back.batch_id == batch_id
+}
+
+test "ingest_epcis_document returns correct event count" {
+  let events = [
+    { event: batch_event, timestamp_unix_secs: now },
+    { event: custody_event, timestamp_unix_secs: now + 3600 }
+  ] in
+  let doc = epcis.to_epcis_document(events) in
+  let ingested = epcis.ingest_epcis_document(doc) in
+  list.len(ingested) == 2
+}
+
+test "round-trip batch_created preserves kind" {
+  let events = [{ event: batch_event, timestamp_unix_secs: now }] in
+  let doc = epcis.to_epcis_document(events) in
+  let ingested = epcis.ingest_epcis_document(doc) in
+  list.head(ingested).kind == "batch_created"
+}
+
+test "round-trip custody_transfer preserves kind" {
+  let events = [{ event: custody_event, timestamp_unix_secs: now }] in
+  let doc = epcis.to_epcis_document(events) in
+  let ingested = epcis.ingest_epcis_document(doc) in
+  list.head(ingested).kind == "custody_transfer"
+}
+
+test "epcis_event_digest starts with sha256:" {
+  let e = epcis.escs_to_epcis_event(batch_event, now) in
+  str.starts_with(epcis.epcis_event_digest(e), "sha256:")
+}
