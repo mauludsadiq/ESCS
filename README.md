@@ -17,15 +17,15 @@ Deploy anywhere with Docker. Connect via standard HTTP.
 ## By the numbers
 
    5,254 lines of FARD
-     387 tests, 0 failures
-       8 source files
-       9 test files
-      12 commits
+     465 tests, 0 failures
+       8 source modules
+      12 test files
+      18 commits
       42 jurisdictions across 5 verticals
       18 event types
       42 gate policies
        6 oracle types
-       1 live end-to-end scenario verified
+       5 verticals live tested end-to-end
 
 ---
 
@@ -70,79 +70,113 @@ databases, and proprietary integrations. ESCS has none of these dependencies.
 
 Institutions connect via standard HTTP. Internal systems (SAP, Oracle, legacy
 ERP) post JSON events to an ESCS adapter. The adapter signs and publishes.
-The institution never runs FARD. Deploy the adapter with Docker.
+The institution never runs FARD. Deploy with Docker in minutes.
 
 ---
 
-## Verticals and Jurisdictions (42 total)
+## Verticals
+
+### Pharmaceutical
+Covers US FDA DSCSA serialization, EU Falsified Medicines Directive, WHO and
+FDA cold chain (2-8C with 1-hour freshness enforcement), and national
+authorities in Japan (PMDA), Brazil (ANVISA), and the UK (MHRA). Recalls
+require RepMin(50) — the highest trust threshold in the system. Cold chain
+claims expire after one hour; a temperature breach automatically challenges
+any active cold chain certification. Live tested: batch creation through FDA
+Class I recall with full recall resolution and silence detection.
+
+### Food
+Covers US FSMA produce safety, EU food safety regulations, cold chain for
+perishables (0-4C, stricter than pharma), and certification schemes including
+USDA Organic, Halal, and Kosher. FSMA and EU food claims require RepMin(10)
+with 24-hour freshness. Food recalls follow the same class-based lifecycle as
+pharma recalls. Live tested: farm-to-table organic spinach from Salinas Valley
+through USDA organic certification, FSMA inspection, and Class I E. coli recall.
+
+### Electronics
+Covers EU REACH (chemical substances), RoHS (hazardous materials), conflict
+minerals traceability under Dodd-Frank Section 1502, WEEE end-of-life
+registration, and country-of-origin attestation. REACH, RoHS, and conflict
+minerals require RepMin(20) from accredited certification bodies. Live tested:
+full semiconductor supply chain from TSMC Taiwan through Singapore to EU
+customs Hamburg, with conflict minerals, REACH, and RoHS certifications.
+
+### Apparel
+Covers labor compliance under ILO core conventions and SA8000, country of
+origin, GOTS organic fiber certification, and Fairtrade International
+certification. Labor compliance and fair trade require RepMin(20); origin
+attestation requires RepMin(10). Certification revocation is a first-class
+event — a signed record of why a certification was withdrawn. Live tested:
+organic cotton t-shirts from Bangladesh through Chittagong Port, UK customs
+at Felixstowe, and Amsterdam distribution to EU retailer.
+
+### Energy
+Covers Renewable Energy Certificates (RECs), carbon credits under Verra VCS,
+grid provenance for cross-border transfers, and ISO 50001 energy management
+certification. RECs and carbon credits require RepMin(20) from accredited
+registries; grid provenance requires RepMin(10). Energy custody transfers
+use grid-native handoff methods (grid_injection, grid_transfer). Live tested:
+Horns Rev 3 offshore wind farm in Denmark generating 50,000 MWh, issuing RECs
+and carbon credits, transferring to German consumer via ACER cross-border
+interconnector with EU customs clearance.
+
+---
+
+## Jurisdictions (42 total)
 
 ### Pharmaceutical (8)
-
-   PHARMA.FDA.DSCSA.v1     US Drug Supply Chain Security Act
-                           RepMin(20) + AgeMax(86400)
-
-   PHARMA.EMA.FMD.v1       EU Falsified Medicines Directive
-                           RepMin(20) + AgeMax(86400)
-
-   PHARMA.COLD.FDA.v1      FDA cold chain (2-8C)
-                           RepMin(10) + AgeMax(3600) — 1 hour freshness
-
-   PHARMA.COLD.WHO.v1      WHO cold chain (vaccines, biologics)
-                           RepMin(10) + AgeMax(3600)
-
-   PHARMA.PMDA.v1          Japan PMDA        RepMin(20)
-   PHARMA.ANVISA.v1        Brazil ANVISA     RepMin(20)
-   PHARMA.MHRA.v1          UK MHRA           RepMin(20)
-   PHARMA.RECALL.v1        Global pharma recall  RepMin(50)
+   PHARMA.FDA.DSCSA.v1     RepMin(20) + AgeMax(86400)
+   PHARMA.EMA.FMD.v1       RepMin(20) + AgeMax(86400)
+   PHARMA.COLD.FDA.v1      RepMin(10) + AgeMax(3600)
+   PHARMA.COLD.WHO.v1      RepMin(10) + AgeMax(3600)
+   PHARMA.PMDA.v1          RepMin(20)
+   PHARMA.ANVISA.v1        RepMin(20)
+   PHARMA.MHRA.v1          RepMin(20)
+   PHARMA.RECALL.v1        RepMin(50)
 
 ### Food (7)
-
-   FOOD.FSMA.v1            US Food Safety Modernization Act  RepMin(10) + AgeMax(86400)
-   FOOD.EU.v1              EU food safety                    RepMin(10) + AgeMax(86400)
-   FOOD.COLD.v1            Food cold chain (0-4C)            RepMin(5)  + AgeMax(3600)
-   FOOD.ORGANIC.USDA.v1    USDA organic certification        RepMin(20)
-   FOOD.HALAL.v1           Halal certification               RepMin(20)
-   FOOD.KOSHER.v1          Kosher certification              RepMin(20)
-   FOOD.RECALL.v1          Food recall                       RepMin(50)
+   FOOD.FSMA.v1            RepMin(10) + AgeMax(86400)
+   FOOD.EU.v1              RepMin(10) + AgeMax(86400)
+   FOOD.COLD.v1            RepMin(5)  + AgeMax(3600)
+   FOOD.ORGANIC.USDA.v1    RepMin(20)
+   FOOD.HALAL.v1           RepMin(20)
+   FOOD.KOSHER.v1          RepMin(20)
+   FOOD.RECALL.v1          RepMin(50)
 
 ### Electronics (5)
-
-   ELEC.REACH.v1           EU REACH compliance (chemicals)      RepMin(20)
-   ELEC.ROHS.v1            EU RoHS (hazardous substances)       RepMin(20)
-   ELEC.CONFLICT.v1        Conflict minerals (Dodd-Frank 1502)  RepMin(20)
-   ELEC.WEEE.v1            EU WEEE directive (e-waste)          RepMin(10)
-   ELEC.ORIGIN.v1          Country of origin                    RepMin(10)
+   ELEC.REACH.v1           RepMin(20)
+   ELEC.ROHS.v1            RepMin(20)
+   ELEC.CONFLICT.v1        RepMin(20)
+   ELEC.WEEE.v1            RepMin(10)
+   ELEC.ORIGIN.v1          RepMin(10)
 
 ### Apparel (4)
-
-   APPAREL.LABOR.v1        Labor compliance (ILO standards)  RepMin(20)
-   APPAREL.ORIGIN.v1       Country of origin                 RepMin(10)
-   APPAREL.ORGANIC.v1      Organic fiber certification       RepMin(20)
-   APPAREL.FAIR.v1         Fair trade certification          RepMin(20)
+   APPAREL.LABOR.v1        RepMin(20)
+   APPAREL.ORIGIN.v1       RepMin(10)
+   APPAREL.ORGANIC.v1      RepMin(20)
+   APPAREL.FAIR.v1         RepMin(20)
 
 ### Energy (4)
-
-   ENERGY.REC.v1           Renewable energy certificates  RepMin(20)
-   ENERGY.CARBON.v1        Carbon credits                 RepMin(20)
-   ENERGY.GRID.v1          Grid provenance                RepMin(10)
-   ENERGY.ISO50001.v1      ISO 50001 energy management    RepMin(20)
+   ENERGY.REC.v1           RepMin(20)
+   ENERGY.CARBON.v1        RepMin(20)
+   ENERGY.GRID.v1          RepMin(10)
+   ENERGY.ISO50001.v1      RepMin(20)
 
 ### Cross-vertical (14)
-
-   SUPPLY.CUSTODY.v1       Custody transfer          RepMin(0)   — any participant
-   SUPPLY.INSPECTION.v1    Inspection results        RepMin(5)
-   SUPPLY.SENSOR.v1        IoT sensor readings       RepMin(1)   + AgeMax(300)
-   SUPPLY.RECALL.v1        Cross-vertical recall     RepMin(50)
-   SUPPLY.ISO9001.v1       ISO 9001 quality          RepMin(20)
-   SUPPLY.ISO28000.v1      ISO 28000 SC security     RepMin(20)
-   SUPPLY.CUSTOMS.US.v1    US CBP customs            RepMin(10)  + AgeMax(86400)
-   SUPPLY.CUSTOMS.EU.v1    EU customs                RepMin(10)  + AgeMax(86400)
-   SUPPLY.CUSTOMS.UK.v1    UK HMRC customs           RepMin(10)  + AgeMax(86400)
-   SUPPLY.CUSTOMS.CN.v1    China customs             RepMin(10)  + AgeMax(86400)
-   SUPPLY.CUSTOMS.JP.v1    Japan customs             RepMin(10)  + AgeMax(86400)
-   SUPPLY.ORACLE.v1        Oracle attestations       RepMin(0)
-   SUPPLY.STATE.v1         State snapshots           RepMin(0)
-   SUPPLY.BATCH.v1         Batch lifecycle           RepMin(0)
+   SUPPLY.CUSTODY.v1       RepMin(0)   — any participant
+   SUPPLY.INSPECTION.v1    RepMin(5)
+   SUPPLY.SENSOR.v1        RepMin(1)   + AgeMax(300)
+   SUPPLY.RECALL.v1        RepMin(50)
+   SUPPLY.ISO9001.v1       RepMin(20)
+   SUPPLY.ISO28000.v1      RepMin(20)
+   SUPPLY.CUSTOMS.US.v1    RepMin(10)  + AgeMax(86400)
+   SUPPLY.CUSTOMS.EU.v1    RepMin(10)  + AgeMax(86400)
+   SUPPLY.CUSTOMS.UK.v1    RepMin(10)  + AgeMax(86400)
+   SUPPLY.CUSTOMS.CN.v1    RepMin(10)  + AgeMax(86400)
+   SUPPLY.CUSTOMS.JP.v1    RepMin(10)  + AgeMax(86400)
+   SUPPLY.ORACLE.v1        RepMin(0)
+   SUPPLY.STATE.v1         RepMin(0)
+   SUPPLY.BATCH.v1         RepMin(0)
 
 ---
 
@@ -171,130 +205,64 @@ Every claim is evaluated by the EOS GateVM (RPN stack machine) before acceptance
 
 Policy hierarchy (strictest to most open):
 
-   recall_policy         RepMin(50)              only highest-rep nodes
-   certification_policy  RepMin(20)              accredited certifiers
+   recall_policy         RepMin(50)
+   certification_policy  RepMin(20)
    pharma_fda_dscsa      RepMin(20) + AgeMax(86400)
    customs_*_policy      RepMin(10) + AgeMax(86400)
-   cold_chain_policy     RepMin(10) + AgeMax(3600)  1-hour freshness
+   cold_chain_policy     RepMin(10) + AgeMax(3600)
    inspection_policy     RepMin(5)
    food_cold_policy      RepMin(5)  + AgeMax(3600)
-   sensor_policy         RepMin(1)  + AgeMax(300)   stale after 5 min
-   custody_policy        RepMin(0)                  any participant
-
-Policy router:  policy_for(claim_space) -> correct GateVM program
-Helpers:        min_reputation_for, max_age_for, requires_age_check
+   sensor_policy         RepMin(1)  + AgeMax(300)
+   custody_policy        RepMin(0)
 
 ---
 
 ## Oracle Model
 
 Oracles are accredited entities whose Ed25519 public keys are registered
-in a signed oracle set for a specific jurisdiction.
-
-   Oracle types:
-     regulatory      FDA, EMA, PMDA, ANVISA, MHRA
-     inspection      SGS, Bureau Veritas, Intertek
-     customs         CBP, HMRC, EU customs authorities
-     sensor          IoT hardware oracles
-     certification   ISO bodies, halal boards, organic certifiers
-     recall          FDA, EFSA, MHRA recall authorities
-
-   Lifecycle:
-     make_oracle -> sign_oracle (root signs) -> verify_oracle
-     revoke_oracle -> oracle_active check
-     make_oracle_set -> sign_oracle_set -> verify_oracle_set
-
-   Authorization:
-     is_authorized(set, pubkey, jurisdiction, type, now) -> bool
-     authorization_report -> detailed rejection reason
-
-   Event signing:
-     sign_event(event, oracle_private_key) -> signed envelope
-     verify_event_signature(signed_event, oracle_pubkey) -> { valid }
+in a signed oracle set for a specific jurisdiction. Six oracle types cover
+the full range of supply chain attestation: regulatory bodies (FDA, EMA),
+inspection organizations (SGS, Bureau Veritas), customs authorities (CBP,
+HMRC), IoT hardware oracles, certification bodies (ISO, Fairtrade, Verra),
+and recall-issuing authorities. Oracle sets are root-signed, content-addressed,
+and verifiable without contacting any central registry.
 
 ---
 
 ## IoT Sensor Architecture
 
-Sensor readings at scale (millions/day) are not published individually.
-The aggregation pattern solves the IoT scale problem:
-
-   1. Readings accumulate in a local window buffer (configurable duration)
-   2. At window close: aggregate stats + Merkle root computed
-   3. ONE claim published per window to Anka mesh
-   4. Raw readings content-addressed in k1 storage
-   5. Any reading provable against Merkle root on demand
-
-Breach detection runs continuously against the live buffer:
-   detect_breach(readings, threshold_min, threshold_max, tolerance_secs)
-   A breach claim is always individual, always immediate.
-   Breach auto-challenges any active cold chain certification.
-
-Thresholds per jurisdiction:
-   FDA cold:  2-8C,   5 min tolerance
-   WHO cold:  2-8C,   5 min tolerance
-   Food cold: 0-4C,  10 min tolerance
-
-Breach severity: critical (>50% above range), major (>20%), minor (<20%)
-
-Merkle proof: reading_proof(reading, all_readings) -> { included, merkle_root }
-Any reading can be proven against the published window claim.
+Sensor readings accumulate in a local window buffer. At window close, one
+claim is published per window — not per reading. The claim includes aggregate
+stats (min, max, avg) and a Merkle root over all readings, so any individual
+reading can be proven against the published claim on demand. Breach detection
+runs continuously: a breach claim is always individual and always immediate,
+bypassing the window. Thresholds are jurisdiction-specific (FDA cold: 2-8C,
+food cold: 0-4C) with configurable tolerance before a breach is declared.
 
 ---
 
 ## Recall Lifecycle
 
-   recall_issued       Signed by RepMin(50) oracle
-                       Propagates via Anka gossip to all batch subscribers
-                       One gossip topic per batch per holder
-                       class_i -> PHARMA.RECALL.v1
-                       class_iii -> SUPPLY.RECALL.v1
-
-   recall_acknowledged Each holder publishes within ack_window:
-                       class_i: 24 hours
-                       class_ii: 72 hours
-                       class_iii: 7 days
-
-   recall_resolved     Holder publishes with quantities and evidence refs
-                       quantity_destroyed + quantity_returned
-
-   recall_silence      AgeMax exceeded, no acknowledgement detected
-                       Signed non-compliance record published to mesh
-                       overdue_secs recorded
-
-Tracker:
-   make_ack_tracker(recall_id, expected_holders)
-   record_ack, record_resolution, compute_silent
-   ack_rate, resolution_rate, is_complete, pending_holders
-   non_compliant_holders, recall_status
+A recall is issued by a RepMin(50) oracle and propagates via Anka gossip to
+all batch topic subscribers. Each holder must acknowledge within the severity
+window (class_i: 24h, class_ii: 72h, class_iii: 7 days). Holders who fail to
+acknowledge after the deadline receive a signed non-compliance record —
+silence itself becomes evidence. Resolution requires publishing quantity
+destroyed or returned with supporting evidence references. The complete
+lifecycle — issuance, acknowledgement, resolution, and silence detection —
+is fully automated and cryptographically verifiable.
 
 ---
 
 ## Provenance Reconstruction
 
-Given a batch ID, ESCS reconstructs the complete epistemic history
-from the Anka mesh audit trail. No central database required.
-
-   reconstruct(anka_url, batch_id) returns:
-   {
-     batch_id, chain_length, chain: [...],
-     recalls, recall_count, under_recall,
-     current_holder, chain_integrity,
-     total_witnesses, total_challenges, contested
-   }
-
-Each chain entry:
-   { event_kind, claim_space, digest_hex, subject,
-     timestamp_unix_secs, issuer_node_id, object,
-     witnesses, witness_count, challenges, challenge_count, contested }
-
-Targeted queries:
-   custody_chain, inspection_history, temperature_history,
-   breaches, customs_history, contested_claims, is_under_recall
-
-Analytics (offline):
-   chain_summary, events_by_kind, events_in_window,
-   has_breach, has_failed_inspection, has_customs_hold, fully_witnessed
+Given a batch ID, ESCS reconstructs the complete epistemic history from the
+Anka mesh audit trail — every event, every witness, every challenge. No
+central database is required. The mesh is the record. Targeted queries return
+custody chains, inspection histories, temperature histories, breach lists,
+customs trails, and contested claims. Analytics run offline: breach detection,
+failed inspection flags, customs holds, witness completeness, and time-window
+filtering all operate on the reconstructed provenance record.
 
 ---
 
@@ -302,45 +270,48 @@ Analytics (offline):
 
    bridge.publish_event(anka_client, kernel, event, timestamp, reputation)
 
-   1. event_to_envelope       — sc_claim converts event to eOS claim
-   2. policy_for(claim_space) — select correct GateVM program
-   3. eval_gate               — evaluate claim against policy
-   4. publish_envelope        — publish to Anka mesh if gate passes
-   5. submit_structural       — witness the published claim
-   6. return result           — { envelope, gate_result, anka_result,
-                                  witness_result, published, witnessed,
-                                  claim_space, digest_hex }
-
-Typed pipelines:
-   publish_batch_created, publish_custody_transfer,
-   publish_inspection, publish_customs, publish_certification,
-   publish_origin, publish_location, publish_sensor_window,
-   publish_breach, publish_recall, publish_recall_ack,
-   publish_recall_resolved, publish_silence, publish_batch
+   1. event_to_envelope    — ESCS event -> signed eOS claim envelope
+   2. policy_for           — select GateVM program for claim_space
+   3. eval_gate            — evaluate claim against policy
+   4. publish_envelope     — publish to Anka mesh if gate passes
+   5. submit_structural    — witness the published claim
+   6. return result        — { envelope, gate_result, anka_result,
+                              witness_result, published, witnessed,
+                              claim_space, digest_hex }
 
 ---
 
-## Live Scenario: Pharmaceutical Cold Chain + FDA Class I Recall
+## Live Scenarios Verified
 
-Verified end-to-end on Anka node (localhost:18080):
+All five verticals tested end-to-end on a live Anka node:
 
-   Step 1   batch_created — Chicago producer, 10,000 units insulin
-   Step 2   custody_transfer — producer -> cold storage Chicago
-   Step 3   sensor window — 5 readings, 3.1-5.1C, in_range, merkle_root
-   Step 4   inspection_passed — FDA certified, rep=5 enforced
-   Step 5   custody_transfer — cold storage -> DHL shipper
-   Step 6   temperature_breach — 11.2C peak, 3 readings, critical severity
-   Step 7   customs_cleared — CBP JFK, rep=10 enforced
-   Step 8   custody_transfer — DHL -> distributor NYC
-   Step 9   certification_issued — WHO cold chain, rep=20
-   Step 10  recall_issued — FDA Class I, rep=50 enforced
-            reason: contamination linked to temperature breach
-   Step 11  recall_acknowledged — distributor NYC, within 24h window
-   Step 12  recall_resolved — 10,000 units destroyed with evidence
-   Step 13  silence_check — 0 non-compliant holders
-   Step 14  provenance analysis — 9 events, 11 witnesses, 1 challenge
-            has_breach: true, active_recalls: 0 (resolved)
-   Step 15  audit trail queryable for every claim
+**Pharmaceutical** — Offshore cold chain + FDA Class I recall.
+Batch created in Chicago, sensor window (3.1-5.1C), FDA inspection, temperature
+breach at 11.2C, JFK customs, distributor NYC. FDA issues Class I recall linked
+to breach. Distributor acknowledges, destroys 10,000 units with evidence.
+Silence check: 0 non-compliant. Full provenance: 9 events, 11 witnesses.
+
+**Food** — Farm-to-table organic produce + E. coli recall.
+Organic spinach from Salinas Valley, USDA organic certification, food cold
+chain (1.2-3.2C within 0-4C threshold), FSMA inspection, LA distributor.
+Class I recall for E. coli O157:H7. Full provenance: 6 events, under recall.
+
+**Electronics** — Semiconductor supply chain, 3 EU compliance certifications.
+TSMC Taiwan, conflict minerals (RMI RMAP), REACH (no SVHC), RoHS (EU
+Directive), Singapore distributor, EU customs Hamburg. Full provenance:
+7 events, 3 certifications, fully witnessed, no recall.
+
+**Apparel** — Ethical fashion, 4 certification types.
+Organic cotton Dhaka Bangladesh, GOTS organic fiber, labor compliance (ILO,
+SA8000, SEDEX), Fairtrade International, sea freight Chittagong, UK customs
+Felixstowe, Amsterdam EU retailer. Certification revocation included.
+Full provenance: 9 events, fully witnessed.
+
+**Energy** — Offshore wind, renewable energy certificates + carbon credits.
+Horns Rev 3 Denmark, 50,000 MWh generation, REC (AIR), carbon credit (Verra
+VCS 25,000 tCO2e), ISO 50001, grid injection to Energinet, EU cross-border
+transfer to German consumer via ACER interconnector. Full provenance:
+9 events, fully witnessed.
 
 ---
 
@@ -354,52 +325,35 @@ Verified end-to-end on Anka node (localhost:18080):
    tests/test_sc_recall.fard          39 tests   recall lifecycle
    tests/test_sc_sensor.fard          45 tests   IoT aggregation + breach
    tests/test_sc_claim.fard           36 tests   ESCS -> eOS envelopes
-   tests/test_sc_bridge.fard          27 tests   pipeline (14 offline + 13 live)
-   tests/test_sc_live.fard            48 tests   live pharma scenario
+   tests/test_sc_bridge.fard          27 tests   pipeline (offline + live)
+   tests/test_sc_live.fard            48 tests   pharma cold chain scenario
+   tests/test_sc_food_live.fard       20 tests   food vertical live
+   tests/test_sc_elec_live.fard       22 tests   electronics vertical live
+   tests/test_sc_apparel_live.fard    34 tests   apparel vertical live
+   tests/test_sc_energy_live.fard     38 tests   energy vertical live
    ─────────────────────────────────────────────────────────────
-   total                             387 tests   0 failures
+   total                             465 tests   0 failures
 
-Run all tests (requires Anka node on localhost:18080 for live tests):
+Run all tests (requires Anka on localhost:18080 for live tests):
 
    bash run_tests.sh
 
-Offline tests only (no Anka required):
-   fardrun test --program tests/test_sc_jurisdictions.fard
-   fardrun test --program tests/test_sc_event.fard
-   fardrun test --program tests/test_sc_oracle.fard
-   fardrun test --program tests/test_sc_policy.fard
-   fardrun test --program tests/test_sc_provenance.fard
-   fardrun test --program tests/test_sc_recall.fard
-   fardrun test --program tests/test_sc_sensor.fard
-   fardrun test --program tests/test_sc_claim.fard
-
 ---
 
-## Line Counts
+## Docker
 
-   src/supply_chain/policy.fard        482
-   src/supply_chain/event.fard         404
-   src/supply_chain/provenance.fard    299
-   src/supply_chain/oracle.fard        260
-   src/supply_chain/bridge.fard        253
-   src/supply_chain/sensor.fard        236
-   src/supply_chain/claim.fard         218
-   src/supply_chain/recall.fard        211
-   src/supply_chain/jurisdictions.fard 171
-   ──────────────────────────────────────
-   source total                      2,534
-   test total                        2,720
-   grand total                       5,254
+   docker build -t escs:latest .
+   docker run -d -p 7700:7700 escs:latest
+   curl http://localhost:7700/health
 
----
+   docker compose up anka gatewayd witnessd telemetryd
 
-## Dependencies
-
-   EOS kernel (github.com/mauludsadiq/EOS)
-     claim, gate, witness, keypair, kernel, canonical
-   Anka mesh (github.com/mauludsadiq/Anka)
-     HTTP node, default localhost:18080
-   FARD runtime v1.7.0
+Services:
+   anka         port 18080   Anka mesh node
+   gatewayd     port 7700    claim eval + policy compile
+   witnessd     port 7701    witness collection + forwarding
+   telemetryd   port 7702    signed telemetry claims
+   adapter      port 7710    institution HTTP adapter (profile: full)
 
 ---
 
@@ -417,7 +371,7 @@ Offline tests only (no Anka required):
 ## Repositories
 
    github.com/mauludsadiq/ESCS       this repo
-   github.com/mauludsadiq/EOS        epistemic kernel (2,948 lines)
+   github.com/mauludsadiq/EOS        epistemic kernel (2,948 lines, 143 tests)
    github.com/mauludsadiq/Anka       coordination mesh (14,506 lines)
    github.com/mauludsadiq/Azim       deterministic AI training
 
