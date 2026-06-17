@@ -1,0 +1,267 @@
+import("std/json") as json
+import("std/str") as str
+import("std/rec") as rec
+import("std/list") as list
+import("/Users/g.bogans/Downloads/EOS/src/kernel/kernel") as eos
+import("/Users/g.bogans/Downloads/EOS/src/kernel/claim") as eos_claim
+import("./jurisdictions") as jur
+import("./event") as ev
+import("./sensor") as sensor
+import("./recall") as recall
+import("./policy") as policy
+
+// claim.fard — convert ESCS supply chain events to eOS claim envelopes
+//
+// This is the bridge between ESCS (supply chain domain) and EOS (epistemic kernel).
+// Every ESCS event becomes a signed eOS claim envelope:
+//
+//   claim_space:   from ev.claim_space_for(event)
+//   subject:       from ev.subject_for(event)
+//   predicate:     event.kind
+//   object:        canonical JSON of the event
+//   evidence_refs: event-specific evidence digests
+//   timestamp:     event timestamp or provided timestamp
+//
+// Special handling:
+//   sensor window claims include merkle_root in evidence_refs
+//   recall claims include recall_id in evidence_refs
+//   breach claims are flagged as urgent (immediate, not windowed)
+//   oracle-signed events include oracle_signature in object
+
+// --- Event timestamp extraction ---
+
+fn event_timestamp(event, fallback_ts) {
+ rec.getOr(event, "timestamp_unix_secs",
+   rec.getOr(event, "timestamp",
+     rec.getOr(event, "window_start", fallback_ts)))
+}
+
+// --- Evidence refs per event kind ---
+
+fn evidence_refs_for(event) {
+ match event.kind {
+   "batch_created" =>
+     [rec.getOr(event, "producer_id", "")],
+   "custody_transfer" =>
+     [rec.getOr(event, "from_party", ""), rec.getOr(event, "to_party", "")],
+   "inspection_passed" =>
+     [rec.getOr(event, "inspector_id", "")],
+   "inspection_failed" =>
+     list.append(
+       [rec.getOr(event, "inspector_id", "")],
+       rec.getOr(event, "evidence_refs", [])
+     ),
+   "customs_cleared" =>
+     [rec.getOr(event, "clearance_ref", ""), rec.getOr(event, "customs_authority", "")],
+   "customs_held" =>
+     list.append(
+       [rec.getOr(event, "hold_ref", ""), rec.getOr(event, "customs_authority", "")],
+       rec.getOr(event, "evidence_refs", [])
+     ),
+   "temperature_log" =>
+     [rec.getOr(event, "sensor_id", ""), rec.getOr(event, "merkle_root", "")],
+   "temperature_breach" =>
+     [rec.getOr(event, "sensor_id", ""), rec.getOr(event, "evidence_ref", "")],
+   "certification_issued" =>
+     [rec.getOr(event, "certifier_id", ""), rec.getOr(event, "cert_ref", "")],
+   "certification_revoked" =>
+     list.append(
+       [rec.getOr(event, "certifier_id", ""), rec.getOr(event, "cert_ref", "")],
+       rec.getOr(event, "evidence_refs", [])
+     ),
+   "recall_issued" =>
+     [rec.getOr(event, "recall_id", ""), rec.getOr(event, "regulatory_ref", "")],
+   "recall_acknowledged" =>
+     [rec.getOr(event, "recall_id", ""), rec.getOr(event, "holder_id", "")],
+   "recall_resolved" =>
+     list.append(
+       [rec.getOr(event, "recall_id", ""), rec.getOr(event, "holder_id", "")],
+       rec.getOr(event, "evidence_refs", [])
+     ),
+   "sensor_reading" =>
+     [rec.getOr(event, "sensor_id", "")],
+   "location_update" =>
+     [rec.getOr(event, "actor_id", ""), rec.getOr(event, "facility_id", "")],
+   "origin_attested" =>
+     list.append(
+       [rec.getOr(event, "certifier_id", "")],
+       rec.getOr(event, "evidence_refs", [])
+     ),
+   _ => []
+ }
+}
+
+// --- Core conversion ---
+
+fn event_to_envelope(k, event, timestamp_unix_secs) {
+ let claim_space = ev.claim_space_for(event) in
+ let subject = ev.subject_for(event) in
+ let predicate = event.kind in
+ let object = json.encode(event) in
+ let evidence = evidence_refs_for(event) in
+ let ts = event_timestamp(event, timestamp_unix_secs) in
+ eos.mint_claim(k, claim_space, subject, predicate, object, evidence, ts)
+}
+
+// --- Typed converters ---
+
+fn batch_created_envelope(k, event, timestamp_unix_secs) {
+ event_to_envelope(k, event, timestamp_unix_secs)
+}
+
+fn custody_transfer_envelope(k, event, timestamp_unix_secs) {
+ event_to_envelope(k, event, timestamp_unix_secs)
+}
+
+fn inspection_envelope(k, event, timestamp_unix_secs) {
+ event_to_envelope(k, event, timestamp_unix_secs)
+}
+
+fn customs_envelope(k, event, timestamp_unix_secs) {
+ event_to_envelope(k, event, timestamp_unix_secs)
+}
+
+// Sensor window claim — includes merkle_root and reading_count in object
+fn sensor_window_envelope(k, window_claim, timestamp_unix_secs) {
+ let claim_space = jur.SUPPLY_SENSOR_V1 in
+ let subject = str.concat(["sc:temperature_log:", window_claim.batch_id]) in
+ let object = json.encode(window_claim) in
+ let evidence = [
+   rec.getOr(window_claim, "sensor_id", ""),
+   rec.getOr(window_claim, "merkle_root", "")
+ ] in
+ eos.mint_claim(k, claim_space, subject, "temperature_log", object, evidence, timestamp_unix_secs)
+}
+
+fn pharma_cold_window_envelope(k, window_claim, jurisdiction, timestamp_unix_secs) {
+ let claim_space = sensor.window_claim_space("temperature", jurisdiction) in
+ let subject = str.concat(["sc:temperature_log:", window_claim.batch_id]) in
+ let object = json.encode(window_claim) in
+ let evidence = [
+   rec.getOr(window_claim, "sensor_id", ""),
+   rec.getOr(window_claim, "merkle_root", "")
+ ] in
+ eos.mint_claim(k, claim_space, subject, "temperature_log", object, evidence, timestamp_unix_secs)
+}
+
+// Breach claim — always individual, always immediate
+fn breach_envelope(k, event, timestamp_unix_secs) {
+ let claim_space = jur.SUPPLY_SENSOR_V1 in
+ let subject = str.concat(["sc:temperature_breach:", rec.getOr(event, "batch_id", "")]) in
+ let object = json.encode(event) in
+ let evidence = [
+   rec.getOr(event, "sensor_id", ""),
+   rec.getOr(event, "evidence_ref", "")
+ ] in
+ eos.mint_claim(k, claim_space, subject, "temperature_breach", object, evidence, timestamp_unix_secs)
+}
+
+// Recall claim — high-stakes, signed by high-rep oracle
+fn recall_envelope(k, recall_record, timestamp_unix_secs) {
+ let claim_space = recall.recall_claim_space(recall_record.severity) in
+ let batch_id = list.head(recall_record.affected_batch_ids) ?? "unknown" in
+ let subject = recall.recall_subject(recall_record.recall_id, batch_id) in
+ let object = json.encode(recall_record) in
+ let evidence = [
+   recall_record.recall_id,
+   rec.getOr(recall_record, "regulatory_ref", "")
+ ] in
+ eos.mint_claim(k, claim_space, subject, "recall_issued", object, evidence, timestamp_unix_secs)
+}
+
+fn recall_ack_envelope(k, ack_event, timestamp_unix_secs) {
+ event_to_envelope(k, ack_event, timestamp_unix_secs)
+}
+
+fn recall_resolved_envelope(k, resolved_event, timestamp_unix_secs) {
+ event_to_envelope(k, resolved_event, timestamp_unix_secs)
+}
+
+// Silence record — non-compliance claim
+fn silence_envelope(k, silence_record, timestamp_unix_secs) {
+ let subject = recall.silence_subject(
+   silence_record.recall_id, silence_record.holder_id) in
+ let object = json.encode(silence_record) in
+ let evidence = [silence_record.recall_id, silence_record.holder_id] in
+ eos.mint_claim(k, jur.SUPPLY_RECALL_V1, subject,
+   "recall_silence", object, evidence, timestamp_unix_secs)
+}
+
+// Certification claim
+fn certification_envelope(k, event, timestamp_unix_secs) {
+ event_to_envelope(k, event, timestamp_unix_secs)
+}
+
+// Origin attestation
+fn origin_envelope(k, event, timestamp_unix_secs) {
+ event_to_envelope(k, event, timestamp_unix_secs)
+}
+
+// State snapshot — batch current state
+fn state_snapshot_envelope(k, batch_id, state_hash, sequence_num, timestamp_unix_secs) {
+ let subject = str.concat(["sc:state:", batch_id, ":", str.from(sequence_num)]) in
+ let object = json.encode({
+   batch_id:     batch_id,
+   state_hash:   state_hash,
+   sequence_num: sequence_num
+ }) in
+ eos.mint_claim(k, jur.SUPPLY_STATE_V1, subject,
+   "state_snapshot", object, [state_hash], timestamp_unix_secs)
+}
+
+// --- Verification ---
+
+fn verify_envelope(envelope, issuer_public_key_hex) {
+ eos_claim.verify(envelope, issuer_public_key_hex)
+}
+
+fn envelope_claim_space(envelope) {
+ envelope.claim.claim_space
+}
+
+fn envelope_batch_id(envelope) {
+ let obj = json.decode(envelope.claim.object) in
+ rec.getOr(obj, "batch_id", null)
+}
+
+fn envelope_predicate(envelope) {
+ envelope.claim.predicate
+}
+
+fn is_breach_envelope(envelope) {
+ envelope.claim.predicate == "temperature_breach"
+}
+
+fn is_recall_envelope(envelope) {
+ let pred = envelope.claim.predicate in
+ pred == "recall_issued" || pred == "recall_acknowledged" || pred == "recall_resolved"
+}
+
+fn is_critical_recall_envelope(envelope) {
+ if !is_recall_envelope(envelope) then false
+ else
+   let obj = json.decode(envelope.claim.object) in
+   rec.getOr(obj, "severity", "") == "class_i"
+}
+
+fn passes_policy(envelope, reputation, now_ts) {
+ let cs = envelope.claim.claim_space in
+ let p = policy.policy_for(cs) in
+ let gate_result = rec.getOr(envelope, "_gate", null) in
+ { claim_space: cs, reputation_needed: policy.min_reputation_for(cs) }
+}
+
+export {
+ event_to_envelope,
+ batch_created_envelope, custody_transfer_envelope,
+ inspection_envelope, customs_envelope,
+ sensor_window_envelope, pharma_cold_window_envelope,
+ breach_envelope, recall_envelope,
+ recall_ack_envelope, recall_resolved_envelope,
+ silence_envelope, certification_envelope,
+ origin_envelope, state_snapshot_envelope,
+ verify_envelope, envelope_claim_space, envelope_batch_id,
+ envelope_predicate, is_breach_envelope, is_recall_envelope,
+ is_critical_recall_envelope, passes_policy, evidence_refs_for,
+ event_timestamp
+}

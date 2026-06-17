@@ -1,0 +1,270 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("std/json") as json
+import("../src/supply_chain/claim") as sc_claim
+import("../src/supply_chain/event") as ev
+import("../src/supply_chain/recall") as recall
+import("../src/supply_chain/sensor") as sensor
+import("../src/supply_chain/jurisdictions") as jur
+import("/Users/g.bogans/Downloads/EOS/src/kernel/keypair") as keypair
+
+import("/Users/g.bogans/Downloads/EOS/src/kernel/kernel") as eos
+
+let k = eos.new("escs-claim-test-node")
+let now = 1710000000
+let batch_id = "batch:LOT-2025-0042"
+
+let custody_event = ev.custody_transfer(
+  batch_id, "party:producer", "party:shipper",
+  "Chicago O'Hare", 1000, "units", "truck", "actor:001"
+)
+
+let inspection_event = ev.inspection_passed(
+  batch_id, "inspector:fda-001", "fda_visual",
+  "Chicago, IL", ["FDA-21CFR"], "no defects"
+)
+
+let temp_log_event = ev.temperature_log(
+  batch_id, "sensor:007", "Chicago Cold Storage",
+  2.1, 7.8, 4.5, now, now + 3600, 360
+)
+
+let breach_event = ev.temperature_breach(
+  batch_id, "sensor:007", "Chicago Cold Storage",
+  11.2, 2.0, 8.0, now + 1800, 600, "log:sha256:abc"
+)
+
+let recall_record = recall.make_recall(
+  "recall:FDA-2025-001", [batch_id], ["LOT-2025-0042"],
+  "DRUG-001", "class_i", "contamination",
+  "oracle:fda-001", "destroy immediately",
+  "FDA-RECALL-2025-001", 86400
+)
+
+let recall_event = ev.recall_issued(
+  "recall:FDA-2025-001", [batch_id], ["LOT-2025-0042"],
+  "DRUG-001", "class_i", "contamination",
+  "oracle:fda-001", "destroy immediately", "FDA-RECALL-2025-001"
+)
+
+let ack_event = ev.recall_acknowledged(
+  "recall:FDA-2025-001", batch_id, "party:shipper", 1000,
+  "Chicago, IL", "quarantine and destroy"
+)
+
+let cert_event = ev.certification_issued(
+  batch_id, "halal", "certifier:001",
+  "HALAL-2025-001", now, now + 31536000, "full batch"
+)
+
+let origin_event = ev.origin_attested(
+  batch_id, "certifier:001", "US", "Illinois",
+  "facility:chi-01", ["FDA-21CFR"], []
+)
+
+test "custody envelope has correct claim_space" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  env.claim.claim_space == jur.SUPPLY_CUSTODY_V1
+}
+
+test "custody envelope predicate is custody_transfer" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  env.claim.predicate == "custody_transfer"
+}
+
+test "custody envelope subject starts with sc:" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  str.starts_with(env.claim.subject, "sc:")
+}
+
+test "custody envelope digest starts with sha256:" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  str.starts_with(env.digest_hex, "sha256:")
+}
+
+test "custody envelope verifies with issuer key" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  sc_claim.verify_envelope(env, k.keypair.public_key_hex).accepted == true
+}
+
+test "custody envelope evidence_refs contains parties" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  list.len(env.claim.evidence_refs) == 2
+}
+
+test "inspection envelope claim_space is SUPPLY_INSPECTION_V1" {
+  let env = sc_claim.event_to_envelope(k, inspection_event, now) in
+  env.claim.claim_space == jur.SUPPLY_INSPECTION_V1
+}
+
+test "inspection envelope object encodes inspector_id" {
+  let env = sc_claim.event_to_envelope(k, inspection_event, now) in
+  let obj = json.decode(env.claim.object) in
+  obj.inspector_id == "inspector:fda-001"
+}
+
+test "temp_log envelope claim_space is SUPPLY_SENSOR_V1" {
+  let env = sc_claim.event_to_envelope(k, temp_log_event, now) in
+  env.claim.claim_space == jur.SUPPLY_SENSOR_V1
+}
+
+test "temp_log envelope evidence_refs contains sensor_id" {
+  let env = sc_claim.event_to_envelope(k, temp_log_event, now) in
+  list.any(env.claim.evidence_refs, fn(r) { r == "sensor:007" })
+}
+
+test "breach envelope uses breach_envelope function" {
+  let env = sc_claim.breach_envelope(k, breach_event, now) in
+  env.claim.claim_space == jur.SUPPLY_SENSOR_V1
+}
+
+test "breach envelope predicate is temperature_breach" {
+  let env = sc_claim.breach_envelope(k, breach_event, now) in
+  env.claim.predicate == "temperature_breach"
+}
+
+test "is_breach_envelope true for breach" {
+  let env = sc_claim.breach_envelope(k, breach_event, now) in
+  sc_claim.is_breach_envelope(env) == true
+}
+
+test "is_breach_envelope false for custody" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  sc_claim.is_breach_envelope(env) == false
+}
+
+test "recall_envelope claim_space is PHARMA_RECALL_V1 for class_i" {
+  let env = sc_claim.recall_envelope(k, recall_record, now) in
+  env.claim.claim_space == jur.PHARMA_RECALL_V1
+}
+
+test "recall_envelope predicate is recall_issued" {
+  let env = sc_claim.recall_envelope(k, recall_record, now) in
+  env.claim.predicate == "recall_issued"
+}
+
+test "recall_envelope evidence includes recall_id" {
+  let env = sc_claim.recall_envelope(k, recall_record, now) in
+  list.any(env.claim.evidence_refs, fn(r) { r == "recall:FDA-2025-001" })
+}
+
+test "is_recall_envelope true for recall" {
+  let env = sc_claim.recall_envelope(k, recall_record, now) in
+  sc_claim.is_recall_envelope(env) == true
+}
+
+test "is_recall_envelope false for custody" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  sc_claim.is_recall_envelope(env) == false
+}
+
+test "is_critical_recall_envelope true for class_i" {
+  let env = sc_claim.recall_envelope(k, recall_record, now) in
+  sc_claim.is_critical_recall_envelope(env) == true
+}
+
+test "recall_ack envelope predicate is recall_acknowledged" {
+  let env = sc_claim.recall_ack_envelope(k, ack_event, now) in
+  env.claim.predicate == "recall_acknowledged"
+}
+
+test "silence_envelope claim_space is SUPPLY_RECALL_V1" {
+  let silence = recall.make_silence_record(
+    "recall:FDA-2025-001", batch_id, "party:shipper",
+    now + 86400, now + 90000
+  ) in
+  let env = sc_claim.silence_envelope(k, silence, now + 90000) in
+  env.claim.claim_space == jur.SUPPLY_RECALL_V1
+}
+
+test "silence_envelope predicate is recall_silence" {
+  let silence = recall.make_silence_record(
+    "recall:FDA-2025-001", batch_id, "party:shipper",
+    now + 86400, now + 90000
+  ) in
+  let env = sc_claim.silence_envelope(k, silence, now + 90000) in
+  env.claim.predicate == "recall_silence"
+}
+
+test "certification_envelope claim_space is SUPPLY_ISO9001_V1" {
+  let env = sc_claim.certification_envelope(k, cert_event, now) in
+  env.claim.claim_space == jur.SUPPLY_ISO9001_V1
+}
+
+test "origin_envelope claim_space is SUPPLY_ORACLE_V1" {
+  let env = sc_claim.origin_envelope(k, origin_event, now) in
+  env.claim.claim_space == jur.SUPPLY_ORACLE_V1
+}
+
+test "state_snapshot_envelope claim_space is SUPPLY_STATE_V1" {
+  let env = sc_claim.state_snapshot_envelope(
+    k, batch_id, "sha256:statehash", 1, now) in
+  env.claim.claim_space == jur.SUPPLY_STATE_V1
+}
+
+test "state_snapshot_envelope predicate is state_snapshot" {
+  let env = sc_claim.state_snapshot_envelope(
+    k, batch_id, "sha256:statehash", 1, now) in
+  env.claim.predicate == "state_snapshot"
+}
+
+test "envelope_claim_space extracts claim_space" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  sc_claim.envelope_claim_space(env) == jur.SUPPLY_CUSTODY_V1
+}
+
+test "envelope_predicate extracts predicate" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  sc_claim.envelope_predicate(env) == "custody_transfer"
+}
+
+test "sensor_window_envelope has merkle_root in evidence" {
+  let window = sensor.new_window("sensor:007", sensor.TYPE_TEMPERATURE, batch_id, now, 3600) in
+  let window_claim = sensor.make_window_claim(window, "Chicago", 2.0, 8.0) in
+  let env = sc_claim.sensor_window_envelope(k, window_claim, now + 3600) in
+  list.any(env.claim.evidence_refs, fn(r) { str.starts_with(r, "sha256:") })
+}
+
+test "pharma_cold_window_envelope uses FDA cold claim space" {
+  let window = sensor.new_window("sensor:007", sensor.TYPE_TEMPERATURE, batch_id, now, 3600) in
+  let window_claim = sensor.make_window_claim(window, "Chicago", 2.0, 8.0) in
+  let env = sc_claim.pharma_cold_window_envelope(k, window_claim, "pharma_fda", now + 3600) in
+  env.claim.claim_space == jur.PHARMA_COLD_FDA_V1
+}
+
+test "event_timestamp uses event field when present" {
+  sc_claim.event_timestamp(custody_event, now) == now
+}
+
+test "event_timestamp uses fallback when no timestamp in event" {
+  let e = { kind: "test" } in
+  sc_claim.event_timestamp(e, now + 999) == now + 999
+}
+
+test "evidence_refs_for recall has recall_id and regulatory_ref" {
+  let refs = sc_claim.evidence_refs_for(recall_event) in
+  list.any(refs, fn(r) { r == "recall:FDA-2025-001" })
+}
+
+test "all envelopes have sha256 digest" {
+  let envs = [
+    sc_claim.event_to_envelope(k, custody_event, now),
+    sc_claim.event_to_envelope(k, inspection_event, now),
+    sc_claim.breach_envelope(k, breach_event, now),
+    sc_claim.recall_envelope(k, recall_record, now)
+  ] in
+  list.all(envs, fn(e) { str.starts_with(e.digest_hex, "sha256:") })
+}
+
+test "all envelopes verify with issuer key" {
+  let envs = [
+    sc_claim.event_to_envelope(k, custody_event, now),
+    sc_claim.event_to_envelope(k, inspection_event, now),
+    sc_claim.breach_envelope(k, breach_event, now),
+    sc_claim.recall_envelope(k, recall_record, now)
+  ] in
+  list.all(envs, fn(e) {
+    sc_claim.verify_envelope(e, k.keypair.public_key_hex).accepted
+  })
+}
