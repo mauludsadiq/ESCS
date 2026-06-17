@@ -1,0 +1,141 @@
+{
+  "timestamp": 1781721073,
+  "adapter_url": "http://localhost:7710",
+  "anka_url": "http://localhost:18080",
+  "config": {
+    "events": 10,
+    "workers": 1,
+    "scale_max": 20
+  },
+  "mesh_before": {
+    "ok": true,
+    "claim_count": 299,
+    "witness_count": 289
+  },
+  "offline_signing": {
+    "label": "offline_signing",
+    "total": 1000,
+    "duration_secs": 0.108,
+    "throughput_eps": 9286.5,
+    "latency_ms": {
+      "min": 0.106,
+      "p50": 0.106,
+      "p99": 0.114,
+      "max": 0.648,
+      "mean": 0.108
+    }
+  },
+  "throughput": {
+    "custody_transfer": {
+      "label": "throughput_custody_transfer",
+      "total": 10,
+      "workers": 1,
+      "duration_secs": 79.0,
+      "throughput_eps": 0.1,
+      "success": 10,
+      "failed": 0,
+      "published": 10,
+      "witnessed": 10,
+      "latency_ms": {
+        "min": 7658.4,
+        "p50": 7911.4,
+        "p95": 8378.1,
+        "p99": 8378.1,
+        "max": 8378.1,
+        "mean": 7900.3
+      }
+    },
+    "batch_created": {
+      "label": "throughput_batch_created",
+      "total": 10,
+      "workers": 1,
+      "duration_secs": 84.46,
+      "throughput_eps": 0.1,
+      "success": 10,
+      "failed": 0,
+      "published": 10,
+      "witnessed": 10,
+      "latency_ms": {
+        "min": 7851.1,
+        "p50": 8649.6,
+        "p95": 9067.7,
+        "p99": 9067.7,
+        "max": 9067.7,
+        "mean": 8446.4
+      }
+    },
+    "temperature_log": {
+      "label": "throughput_temperature_log",
+      "total": 10,
+      "workers": 1,
+      "duration_secs": 92.33,
+      "throughput_eps": 0.1,
+      "success": 10,
+      "failed": 0,
+      "published": 10,
+      "witnessed": 10,
+      "latency_ms": {
+        "min": 8472.8,
+        "p50": 8863.9,
+        "p95": 12622.9,
+        "p99": 12622.9,
+        "max": 12622.9,
+        "mean": 9233.0
+      }
+    }
+  },
+  "scale": [
+    {
+      "claim_count": 10,
+      "batch_size": 10,
+      "duration_secs": 93.83,
+      "throughput_eps": 0.1,
+      "p50_ms": 9403.6,
+      "p95_ms": 9904.7,
+      "success": 10
+    },
+    {
+      "claim_count": 20,
+      "batch_size": 10,
+      "duration_secs": 102.52,
+      "throughput_eps": 0.1,
+      "p50_ms": 9794.9,
+      "p95_ms": 14966.5,
+      "success": 10
+    }
+  ],
+  "gate_overhead": [
+    {
+      "event_type": "custody_transfer",
+      "samples": 19,
+      "mean_ms": 10409.3,
+      "p50_ms": 10373.0,
+      "p99_ms": 11383.9
+    },
+    {
+      "event_type": "batch_created",
+      "samples": 19,
+      "mean_ms": 10523.0,
+      "p50_ms": 10591.0,
+      "p99_ms": 11341.4
+    },
+    {
+      "event_type": "inspection_passed",
+      "samples": 19,
+      "mean_ms": 10709.6,
+      "p50_ms": 10618.3,
+      "p99_ms": 11626.1
+    },
+    {
+      "event_type": "temperature_log",
+      "samples": 19,
+      "mean_ms": 10754.6,
+      "p50_ms": 10515.8,
+      "p99_ms": 11477.2
+    }
+  ],
+  "mesh_after": {
+    "ok": false,
+    "error": "HTTPConnectionPool(host='localhost', port=18080): Read timed out. (read timeout=5)"
+  }
+}
