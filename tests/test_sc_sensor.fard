@@ -1,0 +1,258 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("../src/supply_chain/sensor") as sensor
+import("../src/supply_chain/jurisdictions") as jur
+
+let batch_id  = "batch:LOT-2025-0042"
+let sensor_id = "sensor:cold-unit-007"
+let location  = "Chicago Cold Storage, Unit 7"
+let now       = 1710000000
+
+fn make_temp(value, ts) {
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE,
+    batch_id, location, value, "C", ts)
+}
+
+let readings_ok = [
+  make_temp(3.1, now),
+  make_temp(4.2, now + 60),
+  make_temp(3.8, now + 120),
+  make_temp(5.1, now + 180),
+  make_temp(4.5, now + 240),
+  make_temp(3.9, now + 300)
+]
+
+let readings_breach = [
+  make_temp(3.1, now),
+  make_temp(4.2, now + 60),
+  make_temp(9.5, now + 120),
+  make_temp(11.2, now + 180),
+  make_temp(10.8, now + 240),
+  make_temp(3.9, now + 300)
+]
+
+let window = sensor.new_window(sensor_id, sensor.TYPE_TEMPERATURE,
+  batch_id, now, 3600)
+
+let filled_window = list.fold(readings_ok, window, fn(w, r) {
+  sensor.add_reading(w, r)
+})
+
+test "make_reading has correct sensor_type" {
+  let r = make_temp(4.5, now) in
+  r.sensor_type == sensor.TYPE_TEMPERATURE
+}
+
+test "make_reading has correct value" {
+  let r = make_temp(4.5, now) in
+  r.value == 4.5
+}
+
+test "reading_digest starts with sha256:" {
+  let r = make_temp(4.5, now) in
+  str.starts_with(sensor.reading_digest(r), "sha256:")
+}
+
+test "reading_digest is deterministic" {
+  let r = make_temp(4.5, now) in
+  sensor.reading_digest(r) == sensor.reading_digest(r)
+}
+
+test "new_window has correct reading_count" {
+  window.reading_count == 0
+}
+
+test "add_reading increases count" {
+  let r = make_temp(4.5, now + 10) in
+  let w2 = sensor.add_reading(window, r) in
+  w2.reading_count == 1
+}
+
+test "add_reading rejects reading outside window" {
+  let r = make_temp(4.5, now + 7200) in
+  let w2 = sensor.add_reading(window, r) in
+  w2.reading_count == 0
+}
+
+test "add_reading rejects reading before window start" {
+  let r = make_temp(4.5, now - 1) in
+  let w2 = sensor.add_reading(window, r) in
+  w2.reading_count == 0
+}
+
+test "close_window sets closed to true" {
+  let w2 = sensor.close_window(window) in
+  w2.closed == true
+}
+
+test "add_reading rejects after close" {
+  let w2 = sensor.close_window(window) in
+  let r = make_temp(4.5, now + 10) in
+  let w3 = sensor.add_reading(w2, r) in
+  w3.reading_count == 0
+}
+
+test "window_ready true after window end" {
+  sensor.window_ready(window, now + 3601) == true
+}
+
+test "window_ready false before window end" {
+  sensor.window_ready(window, now + 1000) == false
+}
+
+test "filled_window has 6 readings" {
+  filled_window.reading_count == 6
+}
+
+test "aggregate_readings computes correct min" {
+  let agg = sensor.aggregate_readings(readings_ok) in
+  agg.min == 3.1
+}
+
+test "aggregate_readings computes correct max" {
+  let agg = sensor.aggregate_readings(readings_ok) in
+  agg.max == 5.1
+}
+
+test "aggregate_readings computes correct count" {
+  let agg = sensor.aggregate_readings(readings_ok) in
+  agg.count == 6
+}
+
+test "aggregate_readings returns null for empty" {
+  sensor.aggregate_readings([]) == null
+}
+
+test "merkle_root starts with sha256:" {
+  str.starts_with(sensor.merkle_root(readings_ok), "sha256:")
+}
+
+test "merkle_root is deterministic" {
+  sensor.merkle_root(readings_ok) == sensor.merkle_root(readings_ok)
+}
+
+test "merkle_root differs for different readings" {
+  sensor.merkle_root(readings_ok) != sensor.merkle_root(readings_breach)
+}
+
+test "make_window_claim in_range true for ok readings" {
+  let claim = sensor.make_window_claim(filled_window, location, 2.0, 8.0) in
+  claim.in_range == true
+}
+
+test "make_window_claim has merkle_root" {
+  let claim = sensor.make_window_claim(filled_window, location, 2.0, 8.0) in
+  str.starts_with(claim.merkle_root, "sha256:")
+}
+
+test "make_window_claim has correct reading_count" {
+  let claim = sensor.make_window_claim(filled_window, location, 2.0, 8.0) in
+  claim.reading_count == 6
+}
+
+test "make_window_claim in_range false for breach readings" {
+  let breach_window = list.fold(readings_breach, window, fn(w, r) {
+    sensor.add_reading(w, r)
+  }) in
+  let claim = sensor.make_window_claim(breach_window, location, 2.0, 8.0) in
+  claim.in_range == false
+}
+
+test "window_claim_space pharma_fda returns PHARMA_COLD_FDA_V1" {
+  sensor.window_claim_space("temperature", "pharma_fda") == jur.PHARMA_COLD_FDA_V1
+}
+
+test "window_claim_space food returns FOOD_COLD_V1" {
+  sensor.window_claim_space("temperature", "food") == jur.FOOD_COLD_V1
+}
+
+test "window_claim_space humidity returns SUPPLY_SENSOR_V1" {
+  sensor.window_claim_space("humidity", "pharma_fda") == jur.SUPPLY_SENSOR_V1
+}
+
+test "detect_breach no breach for ok readings" {
+  let result = sensor.detect_breach(readings_ok, 2.0, 8.0, 300) in
+  result.breach == false
+}
+
+test "detect_breach detects breach in breach readings" {
+  let result = sensor.detect_breach(readings_breach, 2.0, 8.0, 60) in
+  result.breach == true
+}
+
+test "detect_breach reports correct breach_count" {
+  let result = sensor.detect_breach(readings_breach, 2.0, 8.0, 60) in
+  result.breach_count == 3
+}
+
+test "detect_breach reports correct peak_value" {
+  let result = sensor.detect_breach(readings_breach, 2.0, 8.0, 60) in
+  result.peak_value == 11.2
+}
+
+test "detect_breach respects tolerance — no breach if duration too short" {
+  let short_breach = [make_temp(9.5, now), make_temp(3.5, now + 10)] in
+  let result = sensor.detect_breach(short_breach, 2.0, 8.0, 300) in
+  result.breach == false
+}
+
+test "thresholds_for FDA cold returns 2-8C" {
+  let t = sensor.thresholds_for(jur.PHARMA_COLD_FDA_V1) in
+  t.min == 2.0 && t.max == 8.0
+}
+
+test "thresholds_for food cold returns 0-4C" {
+  let t = sensor.thresholds_for(jur.FOOD_COLD_V1) in
+  t.min == 0.0 && t.max == 4.0
+}
+
+test "in_threshold true for value within range" {
+  sensor.in_threshold(4.5, jur.PHARMA_COLD_FDA_V1) == true
+}
+
+test "in_threshold false for value above range" {
+  sensor.in_threshold(9.0, jur.PHARMA_COLD_FDA_V1) == false
+}
+
+test "in_threshold false for value below range" {
+  sensor.in_threshold(1.0, jur.PHARMA_COLD_FDA_V1) == false
+}
+
+test "breach_severity critical for large deviation" {
+  sensor.breach_severity(4.0, jur.PHARMA_COLD_FDA_V1) == "critical"
+}
+
+test "breach_severity minor for small deviation" {
+  sensor.breach_severity(0.5, jur.PHARMA_COLD_FDA_V1) == "minor"
+}
+
+test "reading_proof included true for reading in window" {
+  let r = list.head(readings_ok) in
+  let proof = sensor.reading_proof(r, readings_ok) in
+  proof.included == true
+}
+
+test "reading_proof included false for reading not in window" {
+  let outside = make_temp(99.9, now + 9999) in
+  let proof = sensor.reading_proof(outside, readings_ok) in
+  proof.included == false
+}
+
+test "reading_proof merkle_root matches window merkle_root" {
+  let r = list.head(readings_ok) in
+  let proof = sensor.reading_proof(r, readings_ok) in
+  proof.merkle_root == sensor.merkle_root(readings_ok)
+}
+
+test "ALL_SENSOR_TYPES contains 8 types" {
+  list.len(sensor.ALL_SENSOR_TYPES) == 8
+}
+
+test "is_known_sensor_type true for temperature" {
+  sensor.is_known_sensor_type(sensor.TYPE_TEMPERATURE) == true
+}
+
+test "is_known_sensor_type false for unknown" {
+  sensor.is_known_sensor_type("xray") == false
+}

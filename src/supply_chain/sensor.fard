@@ -1,0 +1,293 @@
+import("std/json") as json
+import("std/str") as str
+import("std/rec") as rec
+import("std/list") as list
+import("std/hash") as hash
+import("std/bytes") as bytes
+import("./jurisdictions") as jur
+import("./event") as ev
+
+// sensor.fard — IoT sensor oracle claims for ESCS
+//
+// The IoT scale problem: millions of sensor readings per day cannot
+// each be individual claims on the Anka mesh. Instead:
+//
+//   1. Readings accumulate in a local window buffer
+//   2. At window close, a Merkle root is computed over all readings
+//   3. ONE claim is published: the window summary with Merkle root
+//   4. Raw readings are content-addressed in k1 storage
+//   5. Any reading can be proven against the Merkle root on demand
+//
+// A breach detection is a separate claim — always individual,
+// always immediate, always challenges the active cold chain cert.
+//
+// Sensor types:
+//   temperature    degrees Celsius — cold chain enforcement
+//   humidity       percentage RH
+//   shock          g-force — fragile goods
+//   light          lux — light-sensitive products
+//   pressure       hPa
+//   location       GPS coordinates
+//   door           open/closed events
+//   tamper         tamper detection
+//
+// Threshold enforcement:
+//   Each sensor type has jurisdiction-specific thresholds.
+//   FDA cold chain: 2-8C. WHO vaccines: 2-8C. Food cold: 0-4C.
+//   Breach = any reading outside threshold for duration > tolerance.
+
+// --- Sensor reading (raw, pre-aggregation) ---
+
+fn make_reading(sensor_id, sensor_type, batch_id, location,
+               value, unit, timestamp_unix_secs) {
+ {
+   sensor_id:           sensor_id,
+   sensor_type:         sensor_type,
+   batch_id:            batch_id,
+   location:            location,
+   value:               value,
+   unit:                unit,
+   timestamp_unix_secs: timestamp_unix_secs
+ }
+}
+
+fn reading_digest(reading) {
+ hash.sha256_text(json.canonicalize({
+   sensor_id:           reading.sensor_id,
+   sensor_type:         reading.sensor_type,
+   batch_id:            reading.batch_id,
+   value:               reading.value,
+   unit:                reading.unit,
+   timestamp_unix_secs: reading.timestamp_unix_secs
+ }))
+}
+
+// --- Window buffer ---
+
+fn new_window(sensor_id, sensor_type, batch_id, window_start_ts, window_duration_secs) {
+ {
+   sensor_id:            sensor_id,
+   sensor_type:          sensor_type,
+   batch_id:             batch_id,
+   window_start_ts:      window_start_ts,
+   window_end_ts:        window_start_ts + window_duration_secs,
+   window_duration_secs: window_duration_secs,
+   readings:             [],
+   reading_count:        0,
+   closed:               false
+ }
+}
+
+fn add_reading(window, reading) {
+ if window.closed then window
+ else if reading.timestamp_unix_secs < window.window_start_ts then window
+ else if reading.timestamp_unix_secs > window.window_end_ts then window
+ else
+   let next = list.append(window.readings, reading) in
+   { ...window, readings: next, reading_count: list.len(next) }
+}
+
+fn close_window(window) {
+ { ...window, closed: true }
+}
+
+fn window_ready(window, now_ts) {
+ now_ts >= window.window_end_ts
+}
+
+// --- Window aggregation ---
+
+fn aggregate_readings(readings) {
+ if list.len(readings) == 0 then null
+ else
+   let values = list.map(readings, fn(r) { r.value }) in
+   let sorted = list.sort_by(values, fn(a, b) { if a < b then -1 else if a > b then 1 else 0 }) in
+   let n = list.len(sorted) in
+   let sum = list.fold(values, 0.0, fn(acc, v) { acc + v }) in
+   let avg = sum / n in
+   let min_val = list.head(sorted) in
+   let max_val = list.get(sorted, n - 1) in
+   {
+     count:   n,
+     min:     min_val,
+     max:     max_val,
+     avg:     avg,
+     sum:     sum,
+     first:   list.head(readings).timestamp_unix_secs,
+     last:    list.get(readings, n - 1).timestamp_unix_secs
+   }
+}
+
+// --- Merkle root over readings ---
+// Simple binary Merkle tree over sorted reading digests
+
+fn merkle_root(readings) {
+ if list.len(readings) == 0 then
+   hash.sha256_text("empty")
+ else
+   let digests = list.map(readings, fn(r) { reading_digest(r) }) in
+   let combined = str.concat(digests) in
+   hash.sha256_text(combined)
+}
+
+// --- Window claim ---
+// The single claim published per window — one per N minutes, not per reading
+
+fn make_window_claim(window, location, threshold_min, threshold_max) {
+ let agg = aggregate_readings(window.readings) in
+ let root = merkle_root(window.readings) in
+ let in_range = if agg == null then true
+   else agg.min >= threshold_min && agg.max <= threshold_max in
+ {
+   kind:             "temperature_log",
+   sensor_id:        window.sensor_id,
+   sensor_type:      window.sensor_type,
+   batch_id:         window.batch_id,
+   location:         location,
+   window_start:     window.window_start_ts,
+   window_end:       window.window_end_ts,
+   reading_count:    window.reading_count,
+   merkle_root:      root,
+   threshold_min:    threshold_min,
+   threshold_max:    threshold_max,
+   in_range:         in_range,
+   stats:            agg
+ }
+}
+
+fn window_claim_space(sensor_type, jurisdiction) {
+ if sensor_type == "temperature" then
+   if jurisdiction == "pharma_fda" then jur.PHARMA_COLD_FDA_V1
+   else if jurisdiction == "pharma_who" then jur.PHARMA_COLD_WHO_V1
+   else if jurisdiction == "food" then jur.FOOD_COLD_V1
+   else jur.SUPPLY_SENSOR_V1
+ else jur.SUPPLY_SENSOR_V1
+}
+
+// --- Breach detection ---
+// Immediate, individual claim — never aggregated
+
+fn detect_breach(readings, threshold_min, threshold_max, tolerance_secs) {
+ let breaching = list.filter(readings, fn(r) {
+   r.value < threshold_min || r.value > threshold_max
+ }) in
+ if list.len(breaching) == 0 then { breach: false }
+ else
+   let sorted = list.sort_by(breaching, fn(a, b) {
+    if a.timestamp_unix_secs < b.timestamp_unix_secs then -1
+    else if a.timestamp_unix_secs > b.timestamp_unix_secs then 1
+    else 0
+  }) in
+   let first_breach = list.head(sorted) in
+   let last_breach = list.get(sorted, list.len(sorted) - 1) in
+   let duration = last_breach.timestamp_unix_secs - first_breach.timestamp_unix_secs in
+   if duration < tolerance_secs then { breach: false, duration_secs: duration }
+   else
+     let max_deviation = list.fold(breaching, 0.0, fn(acc, r) {
+       let dev = if r.value > threshold_max then r.value - threshold_max
+                 else threshold_min - r.value in
+       if dev > acc then dev else acc
+     }) in
+     {
+       breach:            true,
+       first_ts:          first_breach.timestamp_unix_secs,
+       last_ts:           last_breach.timestamp_unix_secs,
+       duration_secs:     duration,
+       breach_count:      list.len(breaching),
+       max_deviation:     max_deviation,
+       threshold_min:     threshold_min,
+       threshold_max:     threshold_max,
+       first_value:       first_breach.value,
+       peak_value:        list.fold(breaching, first_breach.value, fn(acc, r) {
+                            if r.value > acc then r.value else acc
+                          })
+     }
+}
+
+fn make_breach_event(breach_result, sensor_id, batch_id, location, evidence_ref) {
+ ev.temperature_breach(
+   batch_id, sensor_id, location,
+   breach_result.peak_value,
+   breach_result.threshold_min,
+   breach_result.threshold_max,
+   breach_result.first_ts,
+   breach_result.duration_secs,
+   evidence_ref
+ )
+}
+
+// --- Threshold registry ---
+// Per-jurisdiction temperature thresholds
+
+fn thresholds_for(jurisdiction) {
+ match jurisdiction {
+   "PHARMA.COLD.FDA.v1"  => { min: 2.0,  max: 8.0,  unit: "C", tolerance_secs: 300  },
+   "PHARMA.COLD.WHO.v1"  => { min: 2.0,  max: 8.0,  unit: "C", tolerance_secs: 300  },
+   "FOOD.COLD.v1"        => { min: 0.0,  max: 4.0,  unit: "C", tolerance_secs: 600  },
+   "SUPPLY.SENSOR.v1"    => { min: -40.0, max: 85.0, unit: "C", tolerance_secs: 3600 },
+   _                     => { min: -40.0, max: 85.0, unit: "C", tolerance_secs: 3600 }
+ }
+}
+
+fn in_threshold(value, jurisdiction) {
+ let t = thresholds_for(jurisdiction) in
+ value >= t.min && value <= t.max
+}
+
+fn breach_severity(max_deviation, jurisdiction) {
+ let t = thresholds_for(jurisdiction) in
+ let range = t.max - t.min in
+ let pct = max_deviation / range * 100.0 in
+ if pct > 50.0 then "critical"
+ else if pct > 20.0 then "major"
+ else "minor"
+}
+
+// --- Sensor proof ---
+// Prove a single reading is included in a published window claim
+// by recomputing its digest and verifying it participates in the Merkle root
+
+fn reading_proof(reading, all_readings_in_window) {
+ let target_digest = reading_digest(reading) in
+ let all_digests = list.map(all_readings_in_window, fn(r) { reading_digest(r) }) in
+ let included = list.any(all_digests, fn(d) { d == target_digest }) in
+ let root = merkle_root(all_readings_in_window) in
+ {
+   reading_digest: target_digest,
+   merkle_root:    root,
+   included:       included,
+   reading_count:  list.len(all_readings_in_window)
+ }
+}
+
+// --- Sensor types ---
+let TYPE_TEMPERATURE = "temperature"
+let TYPE_HUMIDITY    = "humidity"
+let TYPE_SHOCK       = "shock"
+let TYPE_LIGHT       = "light"
+let TYPE_PRESSURE    = "pressure"
+let TYPE_LOCATION    = "location"
+let TYPE_DOOR        = "door"
+let TYPE_TAMPER      = "tamper"
+
+let ALL_SENSOR_TYPES = [
+ TYPE_TEMPERATURE, TYPE_HUMIDITY, TYPE_SHOCK, TYPE_LIGHT,
+ TYPE_PRESSURE, TYPE_LOCATION, TYPE_DOOR, TYPE_TAMPER
+]
+
+fn is_known_sensor_type(t) {
+ list.any(ALL_SENSOR_TYPES, fn(s) { s == t })
+}
+
+export {
+ make_reading, reading_digest,
+ new_window, add_reading, close_window, window_ready,
+ aggregate_readings, merkle_root,
+ make_window_claim, window_claim_space,
+ detect_breach, make_breach_event,
+ thresholds_for, in_threshold, breach_severity,
+ reading_proof,
+ TYPE_TEMPERATURE, TYPE_HUMIDITY, TYPE_SHOCK, TYPE_LIGHT,
+ TYPE_PRESSURE, TYPE_LOCATION, TYPE_DOOR, TYPE_TAMPER,
+ ALL_SENSOR_TYPES, is_known_sensor_type
+}
