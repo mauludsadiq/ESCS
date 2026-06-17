@@ -29,6 +29,7 @@ run_test tests/test_sc_provenance.fard
 run_test tests/test_sc_recall.fard
 run_test tests/test_sc_sensor.fard
 run_test tests/test_sc_claim.fard
+run_test tests/test_sc_bridge.fard
 
 echo ""
 echo "========================="

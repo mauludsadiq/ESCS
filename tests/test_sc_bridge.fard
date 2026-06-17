@@ -1,0 +1,225 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("../src/supply_chain/bridge") as bridge
+import("../src/supply_chain/event") as ev
+import("../src/supply_chain/recall") as recall
+import("../src/supply_chain/sensor") as sensor
+import("../src/supply_chain/jurisdictions") as jur
+import("../src/supply_chain/policy") as policy
+import("../src/supply_chain/claim") as sc_claim
+import("/Users/g.bogans/Downloads/EOS/src/kernel/kernel") as eos
+
+let k = eos.new("escs-bridge-test-node")
+let now = 1710000000
+let batch_id = "batch:LOT-2025-0042"
+let anka_client = bridge.make_client("http://localhost:18080")
+
+let custody_event = ev.custody_transfer(
+  batch_id, "party:producer", "party:shipper",
+  "Chicago O'Hare", 1000, "units", "truck", "actor:001"
+)
+
+let inspection_event = ev.inspection_passed(
+  batch_id, "inspector:fda-001", "fda_visual",
+  "Chicago, IL", ["FDA-21CFR"], "no defects"
+)
+
+let customs_event = ev.customs_cleared(
+  batch_id, "CBP", "CBP-2025-99", "JFK", "US", "actor:customs"
+)
+
+let temp_breach_event = ev.temperature_breach(
+  batch_id, "sensor:007", "Chicago Cold Storage",
+  11.2, 2.0, 8.0, now + 1800, 600, "log:sha256:abc"
+)
+
+let recall_record = recall.make_recall(
+  "recall:FDA-2025-001", [batch_id], ["LOT-2025-0042"],
+  "DRUG-001", "class_i", "contamination",
+  "oracle:fda-001", "destroy immediately",
+  "FDA-RECALL-2025-001", 86400
+)
+
+// --- Offline: gate evaluation tests (no Anka needed) ---
+
+test "publish_event gate denies custody with wrong claim_space" {
+  let bad_event = { ...custody_event, kind: "customs_cleared" } in
+  let env = sc_claim.event_to_envelope(k, bad_event, now) in
+  let p = policy.policy_for(jur.SUPPLY_CUSTOMS_US_V1) in
+  let ctx = { reputation: 0, now: now, policy: p } in
+  let gate = eos.eval_gate(env.claim, ctx) in
+  rec.has(gate, "err")
+}
+
+test "custody event passes custody_policy gate at rep=0" {
+  let env = sc_claim.event_to_envelope(k, custody_event, now) in
+  let p = policy.policy_for(jur.SUPPLY_CUSTODY_V1) in
+  let ctx = { reputation: 0, now: now, policy: p } in
+  eos.eval_gate(env.claim, ctx).ok == true
+}
+
+test "inspection event fails gate at rep=4" {
+  let env = sc_claim.event_to_envelope(k, inspection_event, now) in
+  let p = policy.policy_for(jur.SUPPLY_INSPECTION_V1) in
+  let ctx = { reputation: 4, now: now, policy: p } in
+  rec.has(eos.eval_gate(env.claim, ctx), "err")
+}
+
+test "inspection event passes gate at rep=5" {
+  let env = sc_claim.event_to_envelope(k, inspection_event, now) in
+  let p = policy.policy_for(jur.SUPPLY_INSPECTION_V1) in
+  let ctx = { reputation: 5, now: now, policy: p } in
+  eos.eval_gate(env.claim, ctx).ok == true
+}
+
+test "customs event fails gate at rep=9" {
+  let env = sc_claim.event_to_envelope(k, customs_event, now) in
+  let p = policy.policy_for(jur.SUPPLY_CUSTOMS_US_V1) in
+  let ctx = { reputation: 9, now: now, policy: p } in
+  rec.has(eos.eval_gate(env.claim, ctx), "err")
+}
+
+test "customs event passes gate at rep=10" {
+  let env = sc_claim.event_to_envelope(k, customs_event, now) in
+  let p = policy.policy_for(jur.SUPPLY_CUSTOMS_US_V1) in
+  let ctx = { reputation: 10, now: now, policy: p } in
+  eos.eval_gate(env.claim, ctx).ok == true
+}
+
+test "recall envelope fails gate at rep=49" {
+  let env = sc_claim.recall_envelope(k, recall_record, now) in
+  let p = policy.policy_for(jur.PHARMA_RECALL_V1) in
+  let ctx = { reputation: 49, now: now, policy: p } in
+  rec.has(eos.eval_gate(env.claim, ctx), "err")
+}
+
+test "recall envelope passes gate at rep=50" {
+  let env = sc_claim.recall_envelope(k, recall_record, now) in
+  let p = policy.policy_for(jur.PHARMA_RECALL_V1) in
+  let ctx = { reputation: 50, now: now, policy: p } in
+  eos.eval_gate(env.claim, ctx).ok == true
+}
+
+test "breach envelope passes sensor policy at rep=1" {
+  let env = sc_claim.breach_envelope(k, temp_breach_event, now) in
+  let p = policy.policy_for(jur.SUPPLY_SENSOR_V1) in
+  let ctx = { reputation: 1, now: now, policy: p } in
+  eos.eval_gate(env.claim, ctx).ok == true
+}
+
+test "result helpers all_published true for empty list" {
+  bridge.all_published([]) == true
+}
+
+test "result helpers all_witnessed true for empty list" {
+  bridge.all_witnessed([]) == true
+}
+
+test "failed_results filters unpublished" {
+  let results = [
+    { published: true, witnessed: true, digest_hex: "sha256:a" },
+    { published: false, witnessed: false, digest_hex: "sha256:b" }
+  ] in
+  list.len(bridge.failed_results(results)) == 1
+}
+
+test "digest_list extracts digests" {
+  let results = [
+    { published: true, digest_hex: "sha256:aaa" },
+    { published: true, digest_hex: "sha256:bbb" }
+  ] in
+  list.len(bridge.digest_list(results)) == 2
+}
+
+test "gate_denied_results filters gate failures" {
+  let results = [
+    { published: false, gate_result: { err: "Gate denied" }, digest_hex: "sha256:a" },
+    { published: true,  gate_result: { ok: true },           digest_hex: "sha256:b" }
+  ] in
+  list.len(bridge.gate_denied_results(results)) == 1
+}
+
+// --- Live: requires Anka on localhost:18080 ---
+
+test "anka health check passes" {
+  let result = bridge.health(anka_client) in
+  result.ok == true
+}
+
+test "publish custody_transfer succeeds" {
+  let result = bridge.publish_custody_transfer(anka_client, k, custody_event, now) in
+  result.published == true
+}
+
+test "publish inspection passes with rep=5" {
+  let result = bridge.publish_inspection(anka_client, k, inspection_event, now, 5) in
+  result.published == true
+}
+
+test "publish inspection fails gate with rep=4" {
+  let result = bridge.publish_inspection(anka_client, k, inspection_event, now, 4) in
+  result.published == false && rec.has(result.gate_result, "err")
+}
+
+test "publish customs passes with rep=10" {
+  let result = bridge.publish_customs(anka_client, k, customs_event, now, 10) in
+  result.published == true
+}
+
+test "publish breach succeeds with rep=1" {
+  let result = bridge.publish_breach(anka_client, k, temp_breach_event, now, 1) in
+  result.published == true && result.is_breach == true
+}
+
+test "publish recall fails with rep=49" {
+  let result = bridge.publish_recall(anka_client, k, recall_record, now, 49) in
+  result.published == false
+}
+
+test "publish recall succeeds with rep=50" {
+  let result = bridge.publish_recall(anka_client, k, recall_record, now, 50) in
+  result.published == true && result.is_critical == true
+}
+
+test "publish sensor window succeeds" {
+  let window = sensor.new_window("sensor:007", sensor.TYPE_TEMPERATURE, batch_id, now, 3600) in
+  let r1 = sensor.make_reading("sensor:007", sensor.TYPE_TEMPERATURE, batch_id, "Chicago", 4.5, "C", now + 60) in
+  let r2 = sensor.make_reading("sensor:007", sensor.TYPE_TEMPERATURE, batch_id, "Chicago", 3.8, "C", now + 120) in
+  let w2 = sensor.add_reading(sensor.add_reading(window, r1), r2) in
+  let result = bridge.publish_sensor_window(
+    anka_client, k, w2, "Chicago Cold Storage",
+    2.0, 8.0, "pharma_fda", now + 3600, 10) in
+  result.published == true && result.in_range == true
+}
+
+test "publish_batch publishes all events" {
+  let batch_event = ev.batch_created(
+    "batch:NEW-001", "DRUG-001", 500, "units",
+    "Chicago, IL", "party:producer", "LOT-NEW-001",
+    now, now + 31536000
+  ) in
+  let events = [batch_event, custody_event] in
+  let results = bridge.publish_batch(anka_client, k, events, now, 0) in
+  list.len(results) == 2 && bridge.all_published(results)
+}
+
+test "audit trail retrievable for published claim" {
+  let result = bridge.publish_custody_transfer(anka_client, k, custody_event, now) in
+  let trail = bridge.audit_claim(anka_client, result.digest_hex) in
+  result.published == true && trail.ok == true
+}
+
+test "custody published claim has witnessed flag" {
+  let result = bridge.publish_custody_transfer(anka_client, k, custody_event, now) in
+  result.witnessed == true
+}
+
+test "recall ack envelope is signed and has correct predicate" {
+  let ack = ev.recall_acknowledged(
+    "recall:FDA-2025-001", batch_id, k.keypair.node_id,
+    1000, "Chicago, IL", "quarantine and destroy") in
+  let env = sc_claim.recall_ack_envelope(k, ack, now + 3600) in
+  env.claim.predicate == "recall_acknowledged" &&
+  str.starts_with(env.digest_hex, "sha256:")
+}

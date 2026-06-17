@@ -1,0 +1,279 @@
+import("std/json") as json
+import("std/str") as str
+import("std/rec") as rec
+import("std/list") as list
+import("std/http") as http
+import("/Users/g.bogans/Downloads/EOS/src/kernel/kernel") as eos
+import("/Users/g.bogans/Downloads/EOS/src/anka/bridge") as anka
+import("/Users/g.bogans/Downloads/EOS/src/anka/witness_bridge") as witness_bridge
+import("./jurisdictions") as jur
+import("./event") as ev
+import("./claim") as sc_claim
+import("./policy") as policy
+import("./recall") as recall
+import("./sensor") as sensor
+
+// bridge.fard — full ESCS pipeline
+//
+// Every supply chain event flows through this pipeline:
+//
+//   1. event arrives (any of 18 types)
+//   2. convert to eOS claim envelope (sc_claim.event_to_envelope)
+//   3. evaluate against jurisdiction gate policy
+//   4. if gate passes: publish to Anka mesh
+//   5. submit structural witness for published claim
+//   6. return full result record
+//
+// Special pipelines:
+//   publish_sensor_window  — aggregated IoT window claim
+//   publish_breach         — immediate, bypasses windowing
+//   publish_recall         — high-stakes, notifies all subscribers
+//   publish_silence        — non-compliance record
+//   publish_batch          — full batch lifecycle event set
+//
+// Result record:
+//   { envelope, gate_result, anka_result, witness_result,
+//     published, witnessed, claim_space, digest_hex }
+
+// --- Anka client ---
+
+fn make_client(anka_url) {
+ anka.client(anka_url)
+}
+
+// --- Core pipeline ---
+
+fn publish_event(anka_client, k, event, timestamp_unix_secs, reputation) {
+ let envelope = sc_claim.event_to_envelope(k, event, timestamp_unix_secs) in
+ let claim_space = envelope.claim.claim_space in
+ let p = policy.policy_for(claim_space) in
+ let ctx = { reputation: reputation, now: timestamp_unix_secs, policy: p } in
+ let gate_result = eos.eval_gate(envelope.claim, ctx) in
+ let published = rec.has(gate_result, "ok") in
+ let anka_result = if published
+   then anka.publish_envelope(anka_client, envelope)
+   else { ok: false, reason: "gate denied", gate: gate_result } in
+ let actually_published = published && rec.getOr(anka_result, "ok", false) in
+ let witness_result = if actually_published
+   then witness_bridge.submit_structural(
+     anka_client, k, envelope.digest_hex, timestamp_unix_secs)
+   else { ok: false, reason: "skipped — not published" } in
+ {
+   envelope:       envelope,
+   gate_result:    gate_result,
+   anka_result:    anka_result,
+   witness_result: witness_result,
+   published:      actually_published,
+   witnessed:      actually_published && rec.getOr(witness_result, "ok", false),
+   claim_space:    claim_space,
+   digest_hex:     envelope.digest_hex
+ }
+}
+
+// --- Typed pipeline functions ---
+
+fn publish_batch_created(anka_client, k, event, timestamp_unix_secs) {
+ publish_event(anka_client, k, event, timestamp_unix_secs, 0)
+}
+
+fn publish_custody_transfer(anka_client, k, event, timestamp_unix_secs) {
+ publish_event(anka_client, k, event, timestamp_unix_secs, 0)
+}
+
+fn publish_inspection(anka_client, k, event, timestamp_unix_secs, reputation) {
+ publish_event(anka_client, k, event, timestamp_unix_secs, reputation)
+}
+
+fn publish_customs(anka_client, k, event, timestamp_unix_secs, reputation) {
+ publish_event(anka_client, k, event, timestamp_unix_secs, reputation)
+}
+
+fn publish_certification(anka_client, k, event, timestamp_unix_secs, reputation) {
+ publish_event(anka_client, k, event, timestamp_unix_secs, reputation)
+}
+
+fn publish_origin(anka_client, k, event, timestamp_unix_secs, reputation) {
+ publish_event(anka_client, k, event, timestamp_unix_secs, reputation)
+}
+
+fn publish_location(anka_client, k, event, timestamp_unix_secs) {
+ publish_event(anka_client, k, event, timestamp_unix_secs, 0)
+}
+
+// --- Sensor pipeline ---
+
+fn publish_sensor_window(anka_client, k, window, location,
+                        threshold_min, threshold_max,
+                        jurisdiction, timestamp_unix_secs, reputation) {
+ let window_claim = sensor.make_window_claim(window, location, threshold_min, threshold_max) in
+ let envelope = sc_claim.pharma_cold_window_envelope(
+   k, window_claim, jurisdiction, timestamp_unix_secs) in
+ let claim_space = envelope.claim.claim_space in
+ let p = policy.policy_for(claim_space) in
+ let ctx = { reputation: reputation, now: timestamp_unix_secs, policy: p } in
+ let gate_result = eos.eval_gate(envelope.claim, ctx) in
+ let published = rec.has(gate_result, "ok") in
+ let anka_result = if published
+   then anka.publish_envelope(anka_client, envelope)
+   else { ok: false, reason: "gate denied" } in
+ let actually_published = published && rec.getOr(anka_result, "ok", false) in
+ let witness_result = if actually_published
+   then witness_bridge.submit_structural(
+     anka_client, k, envelope.digest_hex, timestamp_unix_secs)
+   else { ok: false, reason: "skipped" } in
+ {
+   envelope:       envelope,
+   window_claim:   window_claim,
+   gate_result:    gate_result,
+   anka_result:    anka_result,
+   witness_result: witness_result,
+   published:      actually_published,
+   witnessed:      actually_published && rec.getOr(witness_result, "ok", false),
+   in_range:       window_claim.in_range,
+   merkle_root:    window_claim.merkle_root,
+   claim_space:    claim_space,
+   digest_hex:     envelope.digest_hex
+ }
+}
+
+// Breach — immediate, always individual, always published regardless of window
+fn publish_breach(anka_client, k, breach_event, timestamp_unix_secs, reputation) {
+ let envelope = sc_claim.breach_envelope(k, breach_event, timestamp_unix_secs) in
+ let p = policy.policy_for(jur.SUPPLY_SENSOR_V1) in
+ let ctx = { reputation: reputation, now: timestamp_unix_secs, policy: p } in
+ let gate_result = eos.eval_gate(envelope.claim, ctx) in
+ let published = rec.has(gate_result, "ok") in
+ let anka_result = if published
+   then anka.publish_envelope(anka_client, envelope)
+   else { ok: false, reason: "gate denied" } in
+ let actually_published = published && rec.getOr(anka_result, "ok", false) in
+ let witness_result = if actually_published
+   then witness_bridge.submit_structural(
+     anka_client, k, envelope.digest_hex, timestamp_unix_secs)
+   else { ok: false, reason: "skipped" } in
+ {
+   envelope:       envelope,
+   gate_result:    gate_result,
+   anka_result:    anka_result,
+   witness_result: witness_result,
+   published:      actually_published,
+   witnessed:      actually_published && rec.getOr(witness_result, "ok", false),
+   is_breach:      true,
+   claim_space:    jur.SUPPLY_SENSOR_V1,
+   digest_hex:     envelope.digest_hex
+ }
+}
+
+// --- Recall pipeline ---
+
+fn publish_recall(anka_client, k, recall_record, timestamp_unix_secs, reputation) {
+ let envelope = sc_claim.recall_envelope(k, recall_record, timestamp_unix_secs) in
+ let claim_space = envelope.claim.claim_space in
+ let p = policy.policy_for(claim_space) in
+ let ctx = { reputation: reputation, now: timestamp_unix_secs, policy: p } in
+ let gate_result = eos.eval_gate(envelope.claim, ctx) in
+ let published = rec.has(gate_result, "ok") in
+ let anka_result = if published
+   then anka.publish_envelope(anka_client, envelope)
+   else { ok: false, reason: str.concat(["gate denied: rep=", str.from(reputation),
+          " needed=", str.from(policy.min_reputation_for(claim_space))]) } in
+ let actually_published = published && rec.getOr(anka_result, "ok", false) in
+ let witness_result = if actually_published
+   then witness_bridge.submit_structural(
+     anka_client, k, envelope.digest_hex, timestamp_unix_secs)
+   else { ok: false, reason: "skipped" } in
+ {
+   envelope:       envelope,
+   gate_result:    gate_result,
+   anka_result:    anka_result,
+   witness_result: witness_result,
+   published:      actually_published,
+   witnessed:      actually_published && rec.getOr(witness_result, "ok", false),
+   is_critical:    recall.is_critical(recall_record),
+   claim_space:    claim_space,
+   digest_hex:     envelope.digest_hex
+ }
+}
+
+fn publish_recall_ack(anka_client, k, ack_event, timestamp_unix_secs) {
+ publish_event(anka_client, k, ack_event, timestamp_unix_secs, 0)
+}
+
+fn publish_recall_resolved(anka_client, k, resolved_event, timestamp_unix_secs) {
+ publish_event(anka_client, k, resolved_event, timestamp_unix_secs, 0)
+}
+
+fn publish_silence(anka_client, k, silence_record, timestamp_unix_secs) {
+ let envelope = sc_claim.silence_envelope(k, silence_record, timestamp_unix_secs) in
+ let anka_result = anka.publish_envelope(anka_client, envelope) in
+ {
+   envelope:    envelope,
+   anka_result: anka_result,
+   published:   rec.getOr(anka_result, "ok", false),
+   digest_hex:  envelope.digest_hex
+ }
+}
+
+// --- Batch pipeline ---
+// Publish a complete sequence of events for a batch in one call
+
+fn publish_batch(anka_client, k, events, timestamp_unix_secs, reputation) {
+ list.fold(events, [], fn(acc, event) {
+   let result = publish_event(anka_client, k, event, timestamp_unix_secs, reputation) in
+   list.append(acc, result)
+ })
+}
+
+// --- Provenance query ---
+
+fn query_batch(anka_client, claim_space, batch_id) {
+ let subject = str.concat(["sc:", batch_id]) in
+ anka.query(anka_client, claim_space, subject)
+}
+
+fn audit_claim(anka_client, digest_hex) {
+ anka.audit_trail(anka_client, digest_hex)
+}
+
+fn health(anka_client) {
+ anka.health(anka_client)
+}
+
+// --- Result helpers ---
+
+fn all_published(results) {
+ list.all(results, fn(r) { rec.getOr(r, "published", false) })
+}
+
+fn all_witnessed(results) {
+ list.all(results, fn(r) { rec.getOr(r, "witnessed", false) })
+}
+
+fn failed_results(results) {
+ list.filter(results, fn(r) { !rec.getOr(r, "published", false) })
+}
+
+fn digest_list(results) {
+ list.map(results, fn(r) { rec.getOr(r, "digest_hex", "") })
+}
+
+fn gate_denied_results(results) {
+ list.filter(results, fn(r) {
+   rec.has(rec.getOr(r, "gate_result", {}), "err")
+ })
+}
+
+export {
+ make_client,
+ publish_event,
+ publish_batch_created, publish_custody_transfer,
+ publish_inspection, publish_customs,
+ publish_certification, publish_origin, publish_location,
+ publish_sensor_window, publish_breach,
+ publish_recall, publish_recall_ack,
+ publish_recall_resolved, publish_silence,
+ publish_batch,
+ query_batch, audit_claim, health,
+ all_published, all_witnessed, failed_results,
+ digest_list, gate_denied_results
+}
