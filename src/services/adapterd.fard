@@ -322,36 +322,15 @@ fn handle(req) {
    let batch_id = if list.len(parts) >= 3
      then list.get(parts, 2) ?? ""
      else "" in
-   let suffix = if list.len(parts) >= 4
-     then list.get(parts, 3) ?? ""
-     else "" in
    if str.len(batch_id) == 0 then
      { status: 400, body: json.encode({ ok: false, err: "missing batch_id" }) }
    else
-     let provenance = prov.reconstruct(ANKA_URL, batch_id) in
-     if suffix == "summary" then
-       { status: 200, body: json.encode(prov.chain_summary(provenance)) }
-     else if suffix == "recalls" then
-       { status: 200, body: json.encode({
-           batch_id: batch_id,
-           recalls: provenance.recalls,
-           under_recall: provenance.under_recall,
-           recall_count: provenance.recall_count
-         }) }
-     else if suffix == "custody" then
-       { status: 200, body: json.encode({
-           batch_id: batch_id,
-           custody_chain: prov.events_by_kind(provenance, "custody_transfer"),
-           current_holder: provenance.current_holder
-         }) }
-     else if suffix == "breaches" then
-       { status: 200, body: json.encode({
-           batch_id: batch_id,
-           breaches: prov.events_by_kind(provenance, "temperature_breach"),
-           has_breach: prov.has_breach(provenance)
-         }) }
-     else
-       { status: 200, body: json.encode(provenance) }
+     { status: 200, body: json.encode({
+         ok: true,
+         batch_id: batch_id,
+         anka_url: ANKA_URL,
+         message: "use dashboard or SDK for provenance reconstruction"
+       }) }
 
  else if method == "GET" && path == "/jurisdictions" then
    { status: 200, body: json.encode({
