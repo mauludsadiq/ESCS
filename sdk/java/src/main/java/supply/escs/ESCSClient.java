@@ -43,7 +43,8 @@ public class ESCSClient {
     public ESCSClient(String baseUrl) {
         this.baseUrl = baseUrl.replaceAll("/$", "");
         this.http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
+            .connectTimeout(Duration.ofSeconds(30))
+            .version(HttpClient.Version.HTTP_1_1)
             .build();
         this.mapper = new ObjectMapper();
     }
@@ -276,7 +277,7 @@ public class ESCSClient {
             .uri(URI.create(baseUrl + "/events"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(body))
-            .timeout(Duration.ofSeconds(15))
+            .timeout(Duration.ofSeconds(30))
             .build();
         HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
         return mapper.readValue(resp.body(), Receipt.class);
@@ -286,7 +287,7 @@ public class ESCSClient {
         HttpRequest req = HttpRequest.newBuilder()
             .uri(URI.create(baseUrl + path))
             .GET()
-            .timeout(Duration.ofSeconds(15))
+            .timeout(Duration.ofSeconds(30))
             .build();
         HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
         return mapper.readValue(resp.body(), type);
