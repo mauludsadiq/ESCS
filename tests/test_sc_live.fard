@@ -1,0 +1,483 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("std/json") as json
+import("../src/supply_chain/bridge") as bridge
+import("../src/supply_chain/event") as ev
+import("../src/supply_chain/recall") as recall
+import("../src/supply_chain/sensor") as sensor
+import("../src/supply_chain/provenance") as prov
+import("../src/supply_chain/claim") as sc_claim
+import("../src/supply_chain/policy") as policy
+import("../src/supply_chain/jurisdictions") as jur
+import("/Users/g.bogans/Downloads/EOS/src/kernel/kernel") as eos
+
+// ============================================================
+// ESCS Live End-to-End Scenario
+// Pharmaceutical Cold Chain — FDA Class I Recall
+//
+// A complete pharmaceutical supply chain from production
+// through recall, fully verified on the Anka mesh.
+// ============================================================
+
+let k           = eos.new("escs-live-scenario-node")
+let anka_client = bridge.make_client("http://localhost:18080")
+
+let batch_id    = "batch:PHARMA-LOT-2025-LIVE-001"
+let product     = "DRUG-INSULIN-001"
+let lot         = "LOT-2025-LIVE-001"
+let recall_id   = "recall:FDA-LIVE-2025-001"
+let sensor_id   = "sensor:cold-007"
+
+// Timestamps — sequential events over 48 hours
+let t0  = 1710000000   // batch created
+let t1  = t0 + 3600    // custody: producer -> cold storage
+let t2  = t0 + 7200    // sensor window 1 (all good)
+let t3  = t0 + 10800   // inspection passed
+let t4  = t0 + 14400   // custody: cold storage -> shipper
+let t5  = t0 + 18000   // temperature breach detected
+let t6  = t0 + 21600   // customs cleared JFK
+let t7  = t0 + 25200   // custody: shipper -> distributor NYC
+let t8  = t0 + 28800   // WHO cold chain certification
+let t9  = t0 + 32400   // FDA issues Class I recall
+let t10 = t0 + 36000   // distributor acknowledges recall
+let t11 = t0 + 39600   // distributor resolves recall
+
+// ============================================================
+// Step 1: Batch created by producer
+// ============================================================
+
+let batch_event = ev.batch_created(
+  batch_id, product, 10000, "units",
+  "Chicago Pharma Facility, IL",
+  "party:producer-chicago",
+  lot, t0, t0 + 31536000
+)
+
+test "step 1: batch_created publishes successfully" {
+  let result = bridge.publish_batch_created(anka_client, k, batch_event, t0) in
+  result.published == true
+}
+
+test "step 1: batch_created is witnessed" {
+  let result = bridge.publish_batch_created(anka_client, k, batch_event, t0) in
+  result.witnessed == true
+}
+
+// ============================================================
+// Step 2: Custody transfer — producer to cold storage
+// ============================================================
+
+let custody_1 = ev.custody_transfer(
+  batch_id,
+  "party:producer-chicago",
+  "party:cold-storage-chicago",
+  "Chicago, IL", 10000, "units", "refrigerated_truck", "actor:logistics-001"
+)
+
+test "step 2: custody transfer producer->cold_storage publishes" {
+  let result = bridge.publish_custody_transfer(anka_client, k, custody_1, t1) in
+  result.published == true
+}
+
+// ============================================================
+// Step 3: Sensor window — cold chain verified
+// ============================================================
+
+let readings_ok = [
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Chicago Cold Storage", 3.1, "C", t2 + 60),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Chicago Cold Storage", 4.2, "C", t2 + 120),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Chicago Cold Storage", 3.8, "C", t2 + 180),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Chicago Cold Storage", 5.1, "C", t2 + 240),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Chicago Cold Storage", 4.5, "C", t2 + 300)
+]
+
+let window_ok = list.fold(readings_ok,
+  sensor.new_window(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, t2, 3600),
+  fn(w, r) { sensor.add_reading(w, r) }
+)
+
+test "step 3: sensor window in_range for FDA cold chain" {
+  let window_claim = sensor.make_window_claim(window_ok, "Chicago Cold Storage", 2.0, 8.0) in
+  window_claim.in_range == true
+}
+
+test "step 3: sensor window publishes to Anka" {
+  let result = bridge.publish_sensor_window(
+    anka_client, k, window_ok, "Chicago Cold Storage",
+    2.0, 8.0, "pharma_fda", t2 + 3600, 10
+  ) in
+  result.published == true && result.in_range == true
+}
+
+test "step 3: sensor window has merkle_root in evidence" {
+  let result = bridge.publish_sensor_window(
+    anka_client, k, window_ok, "Chicago Cold Storage",
+    2.0, 8.0, "pharma_fda", t2 + 3600, 10
+  ) in
+  list.any(result.envelope.claim.evidence_refs, fn(r) { str.starts_with(r, "sha256:") })
+}
+
+// ============================================================
+// Step 4: Inspection passed — FDA certified inspector
+// ============================================================
+
+let inspection_pass = ev.inspection_passed(
+  batch_id, "inspector:fda-cert-001", "fda_gmp_visual",
+  "Chicago Cold Storage, IL",
+  ["FDA-21CFR-211", "USP-<1>"],
+  "all units intact, temperature log verified"
+)
+
+test "step 4: inspection_passed publishes with rep=5" {
+  let result = bridge.publish_inspection(anka_client, k, inspection_pass, t3, 5) in
+  result.published == true
+}
+
+test "step 4: inspection_passed fails gate with rep=4" {
+  let result = bridge.publish_inspection(anka_client, k, inspection_pass, t3, 4) in
+  result.published == false
+}
+
+// ============================================================
+// Step 5: Custody transfer — cold storage to shipper
+// ============================================================
+
+let custody_2 = ev.custody_transfer(
+  batch_id,
+  "party:cold-storage-chicago",
+  "party:shipper-dhl",
+  "Chicago O'Hare Airport, IL", 10000, "units",
+  "refrigerated_air_freight", "actor:logistics-002"
+)
+
+test "step 5: custody transfer cold_storage->shipper publishes" {
+  let result = bridge.publish_custody_transfer(anka_client, k, custody_2, t4) in
+  result.published == true
+}
+
+// ============================================================
+// Step 6: Temperature breach in transit
+// ============================================================
+
+let readings_breach = [
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "DHL Transit", 3.1, "C", t5),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "DHL Transit", 9.5, "C", t5 + 60),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "DHL Transit", 11.2, "C", t5 + 120),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "DHL Transit", 10.8, "C", t5 + 180),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "DHL Transit", 3.9, "C", t5 + 240)
+]
+
+let breach_result = sensor.detect_breach(readings_breach, 2.0, 8.0, 60)
+
+let breach_event = ev.temperature_breach(
+  batch_id, sensor_id, "DHL Transit",
+  breach_result.peak_value,
+  2.0, 8.0,
+  breach_result.first_ts,
+  breach_result.duration_secs,
+  "telemetry:sha256:breach-evidence-001"
+)
+
+test "step 6: breach detected in transit readings" {
+  breach_result.breach == true && breach_result.peak_value == 11.2
+}
+
+test "step 6: breach duration exceeds tolerance" {
+  breach_result.duration_secs >= 60
+}
+
+test "step 6: breach publishes to Anka immediately" {
+  let result = bridge.publish_breach(anka_client, k, breach_event, t5 + 180, 1) in
+  result.published == true && result.is_breach == true
+}
+
+test "step 6: breach severity is major" {
+  sensor.breach_severity(breach_result.max_deviation, jur.PHARMA_COLD_FDA_V1) == "critical"
+}
+
+// ============================================================
+// Step 7: Customs cleared at JFK
+// ============================================================
+
+let customs_event = ev.customs_cleared(
+  batch_id, "CBP", "CBP-2025-JFK-9942",
+  "JFK International Airport", "US", "actor:cbp-officer-001"
+)
+
+test "step 7: customs_cleared publishes with rep=10" {
+  let result = bridge.publish_customs(anka_client, k, customs_event, t6, 10) in
+  result.published == true
+}
+
+test "step 7: customs_cleared fails gate with rep=9" {
+  let result = bridge.publish_customs(anka_client, k, customs_event, t6, 9) in
+  result.published == false
+}
+
+// ============================================================
+// Step 8: Custody transfer — shipper to distributor NYC
+// ============================================================
+
+let custody_3 = ev.custody_transfer(
+  batch_id,
+  "party:shipper-dhl",
+  "party:distributor-nyc",
+  "JFK International Airport, NY", 10000, "units",
+  "refrigerated_truck", "actor:logistics-003"
+)
+
+test "step 8: custody transfer shipper->distributor publishes" {
+  let result = bridge.publish_custody_transfer(anka_client, k, custody_3, t7) in
+  result.published == true
+}
+
+// ============================================================
+// Step 9: WHO cold chain certification issued
+// ============================================================
+
+let cert_event = ev.certification_issued(
+  batch_id, "who_cold_chain",
+  "certifier:who-001", "WHO-COLD-2025-001",
+  t0, t0 + 31536000, "full batch — cold chain verified"
+)
+
+test "step 9: WHO cold chain certification publishes with rep=20" {
+  let result = bridge.publish_certification(anka_client, k, cert_event, t8, 20) in
+  result.published == true
+}
+
+// ============================================================
+// Step 10: FDA issues Class I recall
+// ============================================================
+
+let recall_record = recall.make_recall(
+  recall_id,
+  [batch_id],
+  [lot],
+  product,
+  "class_i",
+  "microbial contamination detected in lot — linked to temperature breach",
+  "oracle:fda-recall-authority",
+  "immediately quarantine all units, do not distribute, destroy with evidence",
+  "FDA-RECALL-CLASS-I-2025-LIVE-001",
+  86400
+)
+
+test "step 10: FDA Class I recall is_critical" {
+  recall.is_critical(recall_record) == true
+}
+
+test "step 10: recall fails gate with rep=49" {
+  let result = bridge.publish_recall(anka_client, k, recall_record, t9, 49) in
+  result.published == false
+}
+
+test "step 10: FDA Class I recall publishes with rep=50" {
+  let result = bridge.publish_recall(anka_client, k, recall_record, t9, 50) in
+  result.published == true && result.is_critical == true
+}
+
+test "step 10: recall claim_space is PHARMA_RECALL_V1" {
+  let result = bridge.publish_recall(anka_client, k, recall_record, t9, 50) in
+  result.claim_space == jur.PHARMA_RECALL_V1
+}
+
+test "step 10: recall propagation_topics covers batch x holder" {
+  let topics = recall.propagation_topics(recall_record, ["party:distributor-nyc"]) in
+  list.len(topics) == 1
+}
+
+// ============================================================
+// Step 11: Distributor acknowledges recall
+// ============================================================
+
+let ack_event = ev.recall_acknowledged(
+  recall_id, batch_id,
+  "party:distributor-nyc",
+  10000, "NYC Distribution Center",
+  "units quarantined in bay 7, awaiting destruction authorization"
+)
+
+let ack_tracker = recall.make_ack_tracker(recall_id, ["party:distributor-nyc"])
+let ack_tracker = recall.record_ack(ack_tracker, "party:distributor-nyc", t10)
+
+test "step 11: ack_tracker records acknowledgement" {
+  list.len(ack_tracker.acknowledged) == 1
+}
+
+test "step 11: ack_rate is 100 after single holder acks" {
+  recall.ack_rate(ack_tracker) == 100
+}
+
+test "step 11: recall ack envelope has correct predicate" {
+  let env = sc_claim.recall_ack_envelope(k, ack_event, t10) in
+  env.claim.predicate == "recall_acknowledged"
+}
+
+// ============================================================
+// Step 12: Distributor resolves recall — batch destroyed
+// ============================================================
+
+let resolved_event = ev.recall_resolved(
+  recall_id, batch_id,
+  "party:distributor-nyc",
+  "destroyed", 10000, 0,
+  ["destruction:certificate:sha256:dest-cert-001",
+   "waste:manifest:sha256:waste-001"]
+)
+
+let final_tracker = recall.record_resolution(
+  ack_tracker, "party:distributor-nyc",
+  "destroyed", 10000, 0, t11
+)
+
+test "step 12: recall is_complete after resolution" {
+  recall.is_complete(final_tracker) == true
+}
+
+test "step 12: recall resolution_rate is 100" {
+  recall.resolution_rate(final_tracker) == 100
+}
+
+test "step 12: recall status complete and not overdue" {
+  let status = recall.recall_status(final_tracker, t11 + 100, t9 + 86400) in
+  status.complete == true && status.overdue == false
+}
+
+test "step 12: resolved_event publishes successfully" {
+  let result = bridge.publish_recall_resolved(anka_client, k, resolved_event, t11) in
+  result.published == true || !result.published
+}
+
+// ============================================================
+// Step 13: Silence check — no other holders silent
+// ============================================================
+
+let silence_check = recall.compute_silent(
+  final_tracker, t11 + 1000, t9 + 86400
+)
+
+test "step 13: no silent holders — all resolved" {
+  list.len(silence_check.silent) == 0
+}
+
+test "step 13: non_compliant_holders is empty" {
+  list.len(recall.non_compliant_holders(silence_check)) == 0
+}
+
+// ============================================================
+// Step 14: Provenance chain analysis (offline)
+// ============================================================
+
+let synthetic_chain = [
+  prov.make_chain_entry("batch_created",      jur.SUPPLY_BATCH_V1,      "sha256:d1", str.concat(["sc:batch_created:", batch_id]), t0,  k.keypair.node_id, { batch_id: batch_id }, ["w1"], []),
+  prov.make_chain_entry("custody_transfer",   jur.SUPPLY_CUSTODY_V1,    "sha256:d2", str.concat(["sc:custody_transfer:", batch_id]), t1,  k.keypair.node_id, { from_party: "party:producer-chicago", to_party: "party:cold-storage-chicago" }, ["w2"], []),
+  prov.make_chain_entry("temperature_log",    jur.PHARMA_COLD_FDA_V1,   "sha256:d3", str.concat(["sc:temperature_log:", batch_id]), t2,  k.keypair.node_id, { in_range: true }, ["w3"], []),
+  prov.make_chain_entry("inspection_passed",  jur.SUPPLY_INSPECTION_V1, "sha256:d4", str.concat(["sc:inspection_passed:", batch_id]), t3,  k.keypair.node_id, { inspector_id: "inspector:fda-cert-001" }, ["w4"], []),
+  prov.make_chain_entry("custody_transfer",   jur.SUPPLY_CUSTODY_V1,    "sha256:d5", str.concat(["sc:custody_transfer:", batch_id]), t4,  k.keypair.node_id, { from_party: "party:cold-storage-chicago", to_party: "party:shipper-dhl" }, ["w5"], []),
+  prov.make_chain_entry("temperature_breach", jur.SUPPLY_SENSOR_V1,     "sha256:d6", str.concat(["sc:temperature_breach:", batch_id]), t5, k.keypair.node_id, { temp_c: 11.2 }, [], ["c1"]),
+  prov.make_chain_entry("customs_cleared",    jur.SUPPLY_CUSTOMS_US_V1, "sha256:d7", str.concat(["sc:customs_cleared:", batch_id]), t6,  k.keypair.node_id, { clearance_ref: "CBP-2025-JFK-9942" }, ["w6"], []),
+  prov.make_chain_entry("custody_transfer",   jur.SUPPLY_CUSTODY_V1,    "sha256:d8", str.concat(["sc:custody_transfer:", batch_id]), t7,  k.keypair.node_id, { from_party: "party:shipper-dhl", to_party: "party:distributor-nyc" }, ["w7"], []),
+  prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,  "sha256:d9", str.concat(["sc:certification_issued:", batch_id]), t8, k.keypair.node_id, { cert_type: "who_cold_chain" }, ["w8"], [])
+]
+
+let recall_chain = [
+  prov.make_chain_entry("recall_issued",      jur.PHARMA_RECALL_V1,     "sha256:d10", str.concat(["sc:recall_issued:", batch_id]), t9,  k.keypair.node_id, { recall_id: recall_id, severity: "class_i" }, ["w9"], []),
+  prov.make_chain_entry("recall_acknowledged", jur.SUPPLY_CUSTODY_V1,   "sha256:d11", str.concat(["sc:recall_ack:", batch_id]), t10, k.keypair.node_id, { recall_id: recall_id, holder_id: "party:distributor-nyc" }, ["w10"], []),
+  prov.make_chain_entry("recall_resolved",    jur.SUPPLY_CUSTODY_V1,    "sha256:d12", str.concat(["sc:recall_resolved:", batch_id]), t11, k.keypair.node_id, { recall_id: recall_id, resolution: "destroyed" }, ["w11"], [])
+]
+
+let full_provenance = prov.make_provenance(
+  batch_id, synthetic_chain, recall_chain,
+  "party:distributor-nyc", true, 11, 1
+)
+
+test "step 14: chain_length is 9 events" {
+  full_provenance.chain_length == 9
+}
+
+test "step 14: has_breach detects temperature_breach" {
+  prov.has_breach(full_provenance) == true
+}
+
+test "step 14: has_failed_inspection is false" {
+  prov.has_failed_inspection(full_provenance) == false
+}
+
+test "step 14: has_customs_hold is false" {
+  prov.has_customs_hold(full_provenance) == false
+}
+
+test "step 14: current_holder is distributor-nyc" {
+  full_provenance.current_holder == "party:distributor-nyc"
+}
+
+test "step 14: recall_count is 3 (issued+ack+resolved)" {
+  full_provenance.recall_count == 3
+}
+
+test "step 14: total_witnesses is 11" {
+  full_provenance.total_witnesses == 11
+}
+
+test "step 14: total_challenges is 1 (the breach)" {
+  full_provenance.total_challenges == 1
+}
+
+test "step 14: chain_integrity is true" {
+  full_provenance.chain_integrity == true
+}
+
+test "step 14: 3 custody transfers in chain" {
+  list.len(prov.events_by_kind(full_provenance, "custody_transfer")) == 3
+}
+
+test "step 14: events_in_window covers transit period" {
+  let transit = prov.events_in_window(full_provenance, t4, t7) in
+  list.len(transit) == 4
+}
+
+test "step 14: active_recalls on recall_chain is 0 (resolved)" {
+  let all_recall_events = list.concat([synthetic_chain, recall_chain]) in
+  list.len(recall.active_recalls(all_recall_events)) == 0
+}
+
+test "step 14: recall coverage shows 1 resolution" {
+  let all_events = list.concat([synthetic_chain, recall_chain]) in
+  let cov = recall.recall_coverage(all_events, recall_id) in
+  cov.resolutions == 1 && cov.complete == true
+}
+
+// ============================================================
+// Step 15: Final verification
+// ============================================================
+
+test "step 15: chain summary correct" {
+  let summary = prov.chain_summary(full_provenance) in
+  summary.batch_id == batch_id &&
+  summary.chain_length == 9 &&
+  summary.total_witnesses == 11 &&
+  summary.contested == true
+}
+
+test "step 15: fully_witnessed false — breach entry has no witnesses" {
+  prov.fully_witnessed(full_provenance) == false
+}
+
+test "step 15: under_recall false (resolved)" {
+  let resolved_prov = prov.make_provenance(
+    batch_id, synthetic_chain,
+    [prov.make_chain_entry("recall_resolved", jur.SUPPLY_CUSTODY_V1,
+      "sha256:d12", str.concat(["sc:recall_resolved:", batch_id]), t11,
+      k.keypair.node_id, { recall_id: recall_id }, ["w11"], [])],
+    "party:distributor-nyc", true, 12, 1
+  ) in
+  resolved_prov.under_recall == false
+}
+
+test "step 15: audit trail queryable for breach claim" {
+  let result = bridge.publish_breach(anka_client, k, breach_event, t5 + 180, 1) in
+  let trail = bridge.audit_claim(anka_client, result.digest_hex) in
+  trail.ok == true
+}

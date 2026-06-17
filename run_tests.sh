@@ -30,6 +30,7 @@ run_test tests/test_sc_recall.fard
 run_test tests/test_sc_sensor.fard
 run_test tests/test_sc_claim.fard
 run_test tests/test_sc_bridge.fard
+run_test tests/test_sc_live.fard
 
 echo ""
 echo "========================="
