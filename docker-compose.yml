@@ -1,0 +1,103 @@
+version: "3.8"
+
+services:
+
+  # Anka mesh node — ESCS publishes claims here
+  anka:
+    platform: linux/amd64
+    image: ubuntu:22.04
+    volumes:
+      - /Users/g.bogans/Downloads/Anka:/app
+      - /Users/g.bogans/bin/fardrun:/usr/local/bin/fardrun
+    working_dir: /app
+    command: fardrun run --program anka/src/node_process.fard --out out/node
+    ports:
+      - "18080:18080"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:18080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ESCS gateway — evaluates claims against policies at ingress
+  gatewayd:
+    platform: linux/amd64
+    build: .
+    command: fardrun run --program src/services/gatewayd.fard --out out/escs/gateway
+    ports:
+      - "7700:7700"
+    environment:
+      - GATEWAYD_PORT=7700
+      - ANKA_URL=http://anka:18080
+    depends_on:
+      anka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ESCS witness collector — collects and forwards witness records
+  witnessd:
+    platform: linux/amd64
+    build: .
+    command: fardrun run --program src/services/witnessd.fard --out out/escs/witness
+    ports:
+      - "7701:7701"
+    environment:
+      - WITNESSD_PORT=7701
+      - ANKA_URL=http://anka:18080
+      - WITNESSD_SEED=witnessd-docker-node
+    depends_on:
+      anka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7701/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ESCS telemetry — signed trace events as eOS claims
+  telemetryd:
+    platform: linux/amd64
+    build: .
+    command: fardrun run --program src/services/telemetryd.fard --out out/escs/telemetry
+    ports:
+      - "7702:7702"
+    environment:
+      - TELEMETRYD_PORT=7702
+      - ANKA_URL=http://anka:18080
+      - TELEMETRYD_SEED=telemetryd-docker-node
+      - TELEMETRYD_DB=out/escs/telemetry/telemetryd.db
+      - TELEMETRYD_FORWARD=true
+    depends_on:
+      anka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7702/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ESCS adapter — HTTP adapter for institution integration
+  # Institutions POST JSON supply chain events here
+  adapter:
+    platform: linux/amd64
+    build: .
+    command: fardrun run --program src/services/adapterd.fard --out out/escs/adapter
+    ports:
+      - "7710:7710"
+    environment:
+      - ADAPTERD_PORT=7710
+      - ANKA_URL=http://anka:18080
+      - GATEWAYD_URL=http://gatewayd:7700
+      - ADAPTERD_SEED=adapterd-docker-node
+    depends_on:
+      gatewayd:
+        condition: service_healthy
+      witnessd:
+        condition: service_healthy
+    profiles:
+      - full

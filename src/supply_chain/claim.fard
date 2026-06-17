@@ -2,8 +2,8 @@ import("std/json") as json
 import("std/str") as str
 import("std/rec") as rec
 import("std/list") as list
-import("/Users/g.bogans/Downloads/EOS/src/kernel/kernel") as eos
-import("/Users/g.bogans/Downloads/EOS/src/kernel/claim") as eos_claim
+import("../../vendor/eos/src/kernel/kernel") as eos
+import("../../vendor/eos/src/kernel/claim") as eos_claim
 import("./jurisdictions") as jur
 import("./event") as ev
 import("./sensor") as sensor

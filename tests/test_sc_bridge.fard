@@ -8,7 +8,7 @@ import("../src/supply_chain/sensor") as sensor
 import("../src/supply_chain/jurisdictions") as jur
 import("../src/supply_chain/policy") as policy
 import("../src/supply_chain/claim") as sc_claim
-import("/Users/g.bogans/Downloads/EOS/src/kernel/kernel") as eos
+import("../vendor/eos/src/kernel/kernel") as eos
 
 let k = eos.new("escs-bridge-test-node")
 let now = 1710000000

@@ -1,0 +1,6 @@
+out/
+receipts/
+*.DS_Store
+.DS_Store
+.git/
+tests/

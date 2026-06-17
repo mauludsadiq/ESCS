@@ -6,7 +6,7 @@ import("../src/supply_chain/jurisdictions") as jur
 import("../src/supply_chain/event") as ev
 
 // Generate test keypairs via EOS kernel pattern
-import("/Users/g.bogans/Downloads/EOS/src/kernel/keypair") as keypair
+import("../vendor/eos/src/kernel/keypair") as keypair
 
 let root_kp     = keypair.generate("escs-root-oracle-seed")
 let fda_kp      = keypair.generate("escs-fda-oracle-seed")
