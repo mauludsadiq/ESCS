@@ -293,7 +293,47 @@ fn handle(req) {
               then json.decode(req.body)
               else {} in
 
- if method == "GET" && path == "/health" then
+ if method == "POST" && path == "/submit_signed" then
+   if !rec.has(body, "claim") then
+     { status: 400, body: json.encode({ ok: false, err: "missing claim" }) }
+   else if !rec.has(body, "digest_hex") then
+     { status: 400, body: json.encode({ ok: false, err: "missing digest_hex" }) }
+   else
+     let claim = body.claim in
+     let digest_hex = body.digest_hex in
+     let sig_hex = rec.getOr(body, "issuer_signature_hex", "") in
+     let claim_space = rec.getOr(claim, "claim_space", "") in
+     let p = policy.policy_for(claim_space) in
+     let timestamp = rec.getOr(claim, "timestamp_unix_secs", 1710000000) in
+     let reputation = rec.getOr(body, "reputation", 0) in
+     let ctx = { reputation: reputation, now: timestamp, policy: p } in
+     let gate_result = eos.eval_gate(claim, ctx) in
+     let published = rec.has(gate_result, "ok") in
+     let envelope = { claim: claim, digest_hex: digest_hex, issuer_signature_hex: sig_hex } in
+     let anka_result = if published
+       then anka.publish_envelope(anka_client, envelope)
+       else { ok: false, reason: "gate denied", gate: gate_result } in
+     let actually_published = published && rec.getOr(anka_result, "ok", false) in
+     let witness_result = if actually_published
+       then witness_bridge.submit_structural(anka_client, k, digest_hex, timestamp)
+       else { ok: false, reason: "skipped" } in
+     { status: if actually_published then 200 else 422,
+       body: json.encode({
+         ok:            actually_published,
+         published:     actually_published,
+         witnessed:     actually_published && rec.getOr(witness_result, "ok", false),
+         pre_signed:    true,
+         event_type:    rec.getOr(claim, "predicate", ""),
+         batch_id:      rec.getOr(body, "batch_id", ""),
+         claim_space:   claim_space,
+         digest:        digest_hex,
+         issuer_node_id: rec.getOr(claim, "issuer_node_id", ""),
+         timestamp_unix_secs: timestamp,
+         receipt_url:   str.concat([ANKA_URL, "/audit/trail/", digest_hex]),
+         gate_result:   gate_result
+       }) }
+
+ else if method == "GET" && path == "/health" then
    {
      status: 200,
      body: json.encode({

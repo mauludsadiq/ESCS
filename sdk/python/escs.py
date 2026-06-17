@@ -563,6 +563,15 @@ class ESCSClient:
             "timestamp_unix_secs": timestamp or self._now(),
         })
 
+
+    def submit_signed(self, envelope) -> "Receipt":
+        """
+        Submit a pre-signed envelope to the adapter.
+        The adapter skips signing and goes straight to gate + Anka publish.
+        """
+        result = self._post("/submit_signed", envelope.to_dict())
+        return Receipt.from_dict(result)
+
     # --- Provenance queries ---
 
     def provenance(self, batch_id: str) -> Provenance:

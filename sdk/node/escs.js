@@ -429,6 +429,12 @@ class ESCSClient {
     })
   }
 
+
+  async submitSigned(envelope) {
+    const data = await this._post('/submit_signed', envelope.toDict())
+    return new Receipt(data)
+  }
+
   // --- Provenance queries ---
 
   async provenance(batchId) {
