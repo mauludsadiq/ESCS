@@ -1,0 +1,216 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("std/json") as json
+import("../src/supply_chain/bridge") as bridge
+import("../src/supply_chain/event") as ev
+import("../src/supply_chain/claim") as sc_claim
+import("../src/supply_chain/policy") as policy
+import("../src/supply_chain/provenance") as prov
+import("../src/supply_chain/jurisdictions") as jur
+import("../vendor/eos/src/kernel/kernel") as eos
+
+// ============================================================
+// ESCS Electronics Supply Chain Live Test
+// Semiconductor supply chain — REACH, RoHS, conflict minerals
+// ============================================================
+
+let k           = eos.new("escs-elec-live-node")
+let anka_client = bridge.make_client("http://localhost:18080")
+
+let batch_id = "batch:ELEC-CPU-2025-LIVE-001"
+let product  = "CPU-INTEL-CORE-001"
+let lot      = "LOT-ELEC-2025-LIVE-001"
+
+let t0 = 1710200000
+let t1 = t0 + 3600
+let t2 = t0 + 7200
+let t3 = t0 + 10800
+let t4 = t0 + 14400
+let t5 = t0 + 18000
+let t6 = t0 + 21600
+
+// --- Step 1: Batch created at manufacturer ---
+
+let batch_event = ev.batch_created(
+  batch_id, product, 50000, "units",
+  "TSMC Fab, Taiwan",
+  "party:tsmc-001",
+  lot, t0, t0 + 63072000
+)
+
+test "elec step 1: batch_created publishes" {
+  let result = bridge.publish_batch_created(anka_client, k, batch_event, t0) in
+  result.published == true
+}
+
+// --- Step 2: Origin attestation ---
+
+let origin_event = ev.origin_attested(
+  batch_id, "certifier:origin-001", "TW",
+  "Hsinchu Science Park", "facility:tsmc-fab-001",
+  ["ISO-9001", "IECQ-QC-080000"], []
+)
+
+test "elec step 2: origin_attested publishes with rep=10" {
+  let result = bridge.publish_origin(anka_client, k, origin_event, t1, 10) in
+  result.published == true
+}
+
+test "elec step 2: origin claim_space is SUPPLY_ORACLE_V1" {
+  let env = sc_claim.event_to_envelope(k, origin_event, t1) in
+  env.claim.claim_space == jur.SUPPLY_ORACLE_V1
+}
+
+// --- Step 3: Conflict minerals attestation ---
+
+let conflict_cert = ev.certification_issued(
+  batch_id, "conflict_minerals_free",
+  "certifier:rmi-001", "RMI-RMAP-2025-001",
+  t0, t0 + 31536000,
+  "3TG minerals sourced from conflict-free smelters"
+)
+
+test "elec step 3: conflict minerals cert passes with rep=20" {
+  let result = bridge.publish_certification(anka_client, k, conflict_cert, t2, 20) in
+  result.published == true
+}
+
+test "elec step 3: ELEC_CONFLICT_V1 requires RepMin(20)" {
+  policy.min_reputation_for(jur.ELEC_CONFLICT_V1) == 20
+}
+
+test "elec step 3: conflict cert fails with rep=19" {
+  let result = bridge.publish_certification(anka_client, k, conflict_cert, t2, 19) in
+  result.published == false
+}
+
+// --- Step 4: REACH compliance certification ---
+
+let reach_cert = ev.certification_issued(
+  batch_id, "eu_reach_compliant",
+  "certifier:tuv-001", "TUV-REACH-2025-001",
+  t0, t0 + 31536000,
+  "no SVHC substances above 0.1% threshold"
+)
+
+test "elec step 4: REACH cert passes with rep=20" {
+  let result = bridge.publish_certification(anka_client, k, reach_cert, t3, 20) in
+  result.published == true
+}
+
+test "elec step 4: ELEC_REACH_V1 requires RepMin(20)" {
+  policy.min_reputation_for(jur.ELEC_REACH_V1) == 20
+}
+
+// --- Step 5: RoHS compliance ---
+
+let rohs_cert = ev.certification_issued(
+  batch_id, "eu_rohs_compliant",
+  "certifier:tuv-001", "TUV-ROHS-2025-001",
+  t0, t0 + 31536000,
+  "compliant with EU RoHS Directive 2011/65/EU"
+)
+
+test "elec step 5: RoHS cert passes with rep=20" {
+  let result = bridge.publish_certification(anka_client, k, rohs_cert, t4, 20) in
+  result.published == true
+}
+
+test "elec step 5: ELEC_ROHS_V1 requires RepMin(20)" {
+  policy.min_reputation_for(jur.ELEC_ROHS_V1) == 20
+}
+
+// --- Step 6: Custody transfer manufacturer -> distributor ---
+
+let custody_1 = ev.custody_transfer(
+  batch_id,
+  "party:tsmc-001",
+  "party:distributor-sg",
+  "Singapore Changi Airport", 50000, "units",
+  "air_freight", "actor:logistics-elec-001"
+)
+
+test "elec step 6: custody transfer publishes" {
+  let result = bridge.publish_custody_transfer(anka_client, k, custody_1, t5) in
+  result.published == true
+}
+
+// --- Step 7: EU customs clearance ---
+
+let eu_customs = ev.customs_cleared(
+  batch_id, "EU-CUSTOMS", "EU-ELEC-2025-9901",
+  "Hamburg Port", "EU", "actor:eu-customs-001"
+)
+
+test "elec step 7: EU customs passes with rep=10" {
+  let result = bridge.publish_customs(anka_client, k, eu_customs, t6, 10) in
+  result.published == true
+}
+
+test "elec step 7: EU customs fails with rep=9" {
+  let result = bridge.publish_customs(anka_client, k, eu_customs, t6, 9) in
+  result.published == false
+}
+
+// --- Step 8: WEEE registration ---
+
+let weee_cert = ev.certification_issued(
+  batch_id, "eu_weee_registered",
+  "certifier:weee-001", "WEEE-REG-2025-001",
+  t0, t0 + 31536000, "registered for EU WEEE take-back scheme"
+)
+
+test "elec step 8: WEEE cert passes with rep=20" {
+  let result = bridge.publish_certification(anka_client, k, weee_cert, t6, 20) in
+  result.published == true
+}
+
+test "elec step 8: ELEC_WEEE_V1 requires RepMin(10)" {
+  policy.min_reputation_for(jur.ELEC_WEEE_V1) == 10
+}
+
+// --- Provenance analysis ---
+
+let elec_chain = [
+  prov.make_chain_entry("batch_created",        jur.SUPPLY_BATCH_V1,      "sha256:e1", str.concat(["sc:batch_created:", batch_id]),        t0, k.keypair.node_id, { batch_id: batch_id }, ["w1"], []),
+  prov.make_chain_entry("origin_attested",      jur.SUPPLY_ORACLE_V1,     "sha256:e2", str.concat(["sc:origin_attested:", batch_id]),      t1, k.keypair.node_id, { country_of_origin: "TW" }, ["w2"], []),
+  prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,    "sha256:e3", str.concat(["sc:certification_issued:", batch_id]), t2, k.keypair.node_id, { cert_type: "conflict_minerals_free" }, ["w3"], []),
+  prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,    "sha256:e4", str.concat(["sc:certification_issued:", batch_id]), t3, k.keypair.node_id, { cert_type: "eu_reach_compliant" }, ["w4"], []),
+  prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,    "sha256:e5", str.concat(["sc:certification_issued:", batch_id]), t4, k.keypair.node_id, { cert_type: "eu_rohs_compliant" }, ["w5"], []),
+  prov.make_chain_entry("custody_transfer",     jur.SUPPLY_CUSTODY_V1,    "sha256:e6", str.concat(["sc:custody_transfer:", batch_id]),     t5, k.keypair.node_id, { to_party: "party:distributor-sg" }, ["w6"], []),
+  prov.make_chain_entry("customs_cleared",      jur.SUPPLY_CUSTOMS_EU_V1, "sha256:e7", str.concat(["sc:customs_cleared:", batch_id]),      t6, k.keypair.node_id, { clearance_ref: "EU-ELEC-2025-9901" }, ["w7"], [])
+]
+
+let elec_prov = prov.make_provenance(
+  batch_id, elec_chain, [],
+  "party:distributor-sg", true, 7, 0
+)
+
+test "elec provenance: chain_length is 7" {
+  elec_prov.chain_length == 7
+}
+
+test "elec provenance: under_recall is false" {
+  elec_prov.under_recall == false
+}
+
+test "elec provenance: has_breach is false" {
+  prov.has_breach(elec_prov) == false
+}
+
+test "elec provenance: 3 certifications in chain" {
+  list.len(prov.events_by_kind(elec_prov, "certification_issued")) == 3
+}
+
+test "elec provenance: fully_witnessed is true" {
+  prov.fully_witnessed(elec_prov) == true
+}
+
+test "elec provenance: current_holder is distributor-sg" {
+  elec_prov.current_holder == "party:distributor-sg"
+}
+
+test "elec provenance: chain_integrity is true" {
+  elec_prov.chain_integrity == true
+}

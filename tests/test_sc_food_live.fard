@@ -1,0 +1,233 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("std/json") as json
+import("../src/supply_chain/bridge") as bridge
+import("../src/supply_chain/event") as ev
+import("../src/supply_chain/recall") as recall
+import("../src/supply_chain/sensor") as sensor
+import("../src/supply_chain/provenance") as prov
+import("../src/supply_chain/claim") as sc_claim
+import("../src/supply_chain/policy") as policy
+import("../src/supply_chain/jurisdictions") as jur
+import("../vendor/eos/src/kernel/kernel") as eos
+
+// ============================================================
+// ESCS Food Supply Chain Live Test
+// Farm-to-table organic produce — cold chain + recall
+// ============================================================
+
+let k           = eos.new("escs-food-live-node")
+let anka_client = bridge.make_client("http://localhost:18080")
+
+let batch_id  = "batch:FOOD-ORGANIC-2025-LIVE-001"
+let product   = "ORGANIC-SPINACH-001"
+let lot       = "LOT-FOOD-2025-LIVE-001"
+let recall_id = "recall:EFSA-LIVE-2025-001"
+let sensor_id = "sensor:food-cold-012"
+
+let t0  = 1710100000
+let t1  = t0 + 1800
+let t2  = t0 + 3600
+let t3  = t0 + 5400
+let t4  = t0 + 7200
+let t5  = t0 + 9000
+let t6  = t0 + 10800
+let t7  = t0 + 12600
+
+// --- Step 1: Batch created at farm ---
+
+let batch_event = ev.batch_created(
+  batch_id, product, 5000, "kg",
+  "Salinas Valley, CA",
+  "party:farm-organic-001",
+  lot, t0, t0 + 604800
+)
+
+test "food step 1: batch_created publishes" {
+  let result = bridge.publish_batch_created(anka_client, k, batch_event, t0) in
+  result.published == true
+}
+
+// --- Step 2: USDA organic certification ---
+
+let organic_cert = ev.certification_issued(
+  batch_id, "usda_organic",
+  "certifier:usda-001", "USDA-ORG-2025-001",
+  t0, t0 + 31536000, "full batch certified organic"
+)
+
+test "food step 2: USDA organic cert passes with rep=20" {
+  let result = bridge.publish_certification(anka_client, k, organic_cert, t1, 20) in
+  result.published == true
+}
+
+test "food step 2: USDA organic cert fails with rep=19" {
+  let result = bridge.publish_certification(anka_client, k, organic_cert, t1, 19) in
+  result.published == false
+}
+
+// --- Step 3: Custody transfer farm -> cold storage ---
+
+let custody_1 = ev.custody_transfer(
+  batch_id,
+  "party:farm-organic-001",
+  "party:cold-storage-salinas",
+  "Salinas, CA", 5000, "kg", "refrigerated_truck", "actor:001"
+)
+
+test "food step 3: custody transfer publishes" {
+  let result = bridge.publish_custody_transfer(anka_client, k, custody_1, t2) in
+  result.published == true
+}
+
+// --- Step 4: Food cold chain sensor window (0-4C) ---
+
+let food_readings = [
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Salinas Cold Storage", 1.2, "C", t3 + 60),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Salinas Cold Storage", 2.1, "C", t3 + 120),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Salinas Cold Storage", 1.8, "C", t3 + 180),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Salinas Cold Storage", 3.2, "C", t3 + 240),
+  sensor.make_reading(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, "Salinas Cold Storage", 2.5, "C", t3 + 300)
+]
+
+let food_window = list.fold(food_readings,
+  sensor.new_window(sensor_id, sensor.TYPE_TEMPERATURE, batch_id, t3, 3600),
+  fn(w, r) { sensor.add_reading(w, r) }
+)
+
+test "food step 4: food cold chain readings in range 0-4C" {
+  let window_claim = sensor.make_window_claim(food_window, "Salinas Cold Storage", 0.0, 4.0) in
+  window_claim.in_range == true
+}
+
+test "food step 4: food cold chain window publishes" {
+  let result = bridge.publish_sensor_window(
+    anka_client, k, food_window, "Salinas Cold Storage",
+    0.0, 4.0, "food", t3 + 3600, 5
+  ) in
+  result.published == true && result.in_range == true
+}
+
+test "food step 4: food cold chain requires lower temp than pharma" {
+  let t = sensor.thresholds_for(jur.FOOD_COLD_V1) in
+  t.max == 4.0 && t.min == 0.0
+}
+
+// --- Step 5: FSMA inspection ---
+
+let fsma_inspection = ev.inspection_passed(
+  batch_id, "inspector:fda-fsma-001", "fsma_produce_safety",
+  "Salinas, CA", ["FSMA-PSR", "GAP-CERTIFIED"], "produce safety verified"
+)
+
+test "food step 5: FSMA inspection passes with rep=10" {
+  let result = bridge.publish_inspection(anka_client, k, fsma_inspection, t4, 10) in
+  result.published == true
+}
+
+test "food step 5: FSMA claim_space is FOOD_FSMA_V1 after publish" {
+  let env = sc_claim.event_to_envelope(k, fsma_inspection, t4) in
+  env.claim.claim_space == jur.SUPPLY_INSPECTION_V1
+}
+
+// --- Step 6: Custody transfer to distributor ---
+
+let custody_2 = ev.custody_transfer(
+  batch_id,
+  "party:cold-storage-salinas",
+  "party:distributor-la",
+  "Los Angeles, CA", 5000, "kg", "refrigerated_truck", "actor:002"
+)
+
+test "food step 6: custody transfer to distributor publishes" {
+  let result = bridge.publish_custody_transfer(anka_client, k, custody_2, t5) in
+  result.published == true
+}
+
+// --- Step 7: EU food safety clearance ---
+
+let eu_food_event = ev.customs_cleared(
+  batch_id, "EU-CUSTOMS", "EU-FOOD-2025-001",
+  "Rotterdam Port", "EU", "actor:eu-customs"
+)
+
+test "food step 7: EU food customs passes with rep=10" {
+  let env = sc_claim.event_to_envelope(k, eu_food_event, t6) in
+  let p = policy.policy_for(env.claim.claim_space) in
+  let ctx = { reputation: 10, now: t6, policy: p } in
+  eos.eval_gate(env.claim, ctx).ok == true
+}
+
+// --- Step 8: Food recall (E. coli detected) ---
+
+let food_recall = recall.make_recall(
+  recall_id,
+  [batch_id],
+  [lot],
+  product,
+  "class_i",
+  "E. coli O157:H7 detected in lot sample",
+  "oracle:fda-food-001",
+  "do not consume, return to point of purchase or destroy",
+  "FDA-FOOD-RECALL-2025-LIVE-001",
+  86400
+)
+
+test "food step 8: food recall is_critical" {
+  recall.is_critical(food_recall) == true
+}
+
+test "food step 8: food recall fails gate with rep=49" {
+  let result = bridge.publish_recall(anka_client, k, food_recall, t7, 49) in
+  result.published == false
+}
+
+test "food step 8: food recall publishes with rep=50" {
+  let result = bridge.publish_recall(anka_client, k, food_recall, t7, 50) in
+  result.published == true
+}
+
+test "food step 8: food recall ack window is 24h for class_i" {
+  recall.default_ack_window("class_i") == 86400
+}
+
+// --- Provenance analysis ---
+
+let food_chain = [
+  prov.make_chain_entry("batch_created",       jur.SUPPLY_BATCH_V1,       "sha256:f1", str.concat(["sc:batch_created:", batch_id]),       t0, k.keypair.node_id, { batch_id: batch_id }, ["w1"], []),
+  prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,    "sha256:f2", str.concat(["sc:certification_issued:", batch_id]), t1, k.keypair.node_id, { cert_type: "usda_organic" }, ["w2"], []),
+  prov.make_chain_entry("custody_transfer",    jur.SUPPLY_CUSTODY_V1,     "sha256:f3", str.concat(["sc:custody_transfer:", batch_id]),     t2, k.keypair.node_id, { from_party: "party:farm-organic-001" }, ["w3"], []),
+  prov.make_chain_entry("temperature_log",     jur.FOOD_COLD_V1,          "sha256:f4", str.concat(["sc:temperature_log:", batch_id]),      t3, k.keypair.node_id, { in_range: true }, ["w4"], []),
+  prov.make_chain_entry("inspection_passed",   jur.SUPPLY_INSPECTION_V1,  "sha256:f5", str.concat(["sc:inspection_passed:", batch_id]),    t4, k.keypair.node_id, { inspector_id: "inspector:fda-fsma-001" }, ["w5"], []),
+  prov.make_chain_entry("custody_transfer",    jur.SUPPLY_CUSTODY_V1,     "sha256:f6", str.concat(["sc:custody_transfer:", batch_id]),     t5, k.keypair.node_id, { to_party: "party:distributor-la" }, ["w6"], [])
+]
+
+let food_recall_chain = [
+  prov.make_chain_entry("recall_issued", jur.PHARMA_RECALL_V1, "sha256:f7", str.concat(["sc:recall_issued:", batch_id]), t7, k.keypair.node_id, { recall_id: recall_id, severity: "class_i" }, ["w7"], [])
+]
+
+let food_prov = prov.make_provenance(
+  batch_id, food_chain, food_recall_chain,
+  "party:distributor-la", true, 7, 0
+)
+
+test "food provenance: chain_length is 6" {
+  food_prov.chain_length == 6
+}
+
+test "food provenance: under_recall is true" {
+  food_prov.under_recall == true
+}
+
+test "food provenance: has_breach is false" {
+  prov.has_breach(food_prov) == false
+}
+
+test "food provenance: 2 custody transfers" {
+  list.len(prov.events_by_kind(food_prov, "custody_transfer")) == 2
+}
+
+test "food provenance: current_holder is distributor-la" {
+  food_prov.current_holder == "party:distributor-la"
+}
