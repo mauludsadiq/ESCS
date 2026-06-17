@@ -26,6 +26,7 @@ run_test tests/test_sc_event.fard
 run_test tests/test_sc_oracle.fard
 run_test tests/test_sc_policy.fard
 run_test tests/test_sc_provenance.fard
+run_test tests/test_sc_recall.fard
 
 echo ""
 echo "========================="

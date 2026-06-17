@@ -1,0 +1,294 @@
+import("std/json") as json
+import("std/str") as str
+import("std/rec") as rec
+import("std/list") as list
+import("std/hash") as hash
+import("./jurisdictions") as jur
+import("./event") as ev
+
+// recall.fard — recall lifecycle for ESCS
+//
+// A recall is the most critical supply chain event.
+// It must reach every current holder of affected batches,
+// be acknowledged within the window, and be resolved with evidence.
+// Silence after the acknowledgement window becomes evidence of non-compliance.
+//
+// Lifecycle:
+//   1. recall_issued       — signed by high-rep oracle (RepMin 50)
+//                            propagates via Anka gossip to all batch subscribers
+//   2. recall_acknowledged — each holder publishes within ack_window_secs
+//   3. recall_resolved     — holder publishes resolution with evidence
+//      OR
+//      recall_silence      — AgeMax exceeded, no ack — non-compliance record
+//
+// Severity classes (FDA model):
+//   class_i    Life-threatening or serious adverse health consequences
+//   class_ii   May cause temporary adverse health consequences
+//   class_iii  Unlikely to cause adverse health consequences
+//
+// A class_i recall automatically challenges any active custody claim
+// for affected batches — the challenge is part of the recall record.
+
+// --- Recall record ---
+
+fn make_recall(recall_id, affected_batch_ids, affected_lot_numbers,
+              product_code, severity, reason, issuer_id,
+              instructions, regulatory_ref, ack_window_secs) {
+ {
+   recall_id:            recall_id,
+   affected_batch_ids:   affected_batch_ids,
+   affected_lot_numbers: affected_lot_numbers,
+   product_code:         product_code,
+   severity:             severity,
+   reason:               reason,
+   issuer_id:            issuer_id,
+   instructions:         instructions,
+   regulatory_ref:       regulatory_ref,
+   ack_window_secs:      ack_window_secs,
+   batch_count:          list.len(affected_batch_ids)
+ }
+}
+
+fn recall_digest(recall) {
+ hash.sha256_text(json.canonicalize({
+   recall_id:            recall.recall_id,
+   affected_batch_ids:   recall.affected_batch_ids,
+   affected_lot_numbers: recall.affected_lot_numbers,
+   product_code:         recall.product_code,
+   severity:             recall.severity,
+   reason:               recall.reason,
+   issuer_id:            recall.issuer_id,
+   regulatory_ref:       recall.regulatory_ref
+ }))
+}
+
+fn recall_claim_space(severity) {
+ match severity {
+   "class_i"   => jur.PHARMA_RECALL_V1,
+   "class_ii"  => jur.PHARMA_RECALL_V1,
+   "class_iii" => jur.SUPPLY_RECALL_V1,
+   _           => jur.SUPPLY_RECALL_V1
+ }
+}
+
+fn recall_subject(recall_id, batch_id) {
+ str.concat(["sc:recall:", recall_id, ":", batch_id])
+}
+
+fn is_critical(recall) {
+ recall.severity == "class_i"
+}
+
+fn ack_deadline(recall, issued_timestamp) {
+ issued_timestamp + recall.ack_window_secs
+}
+
+fn default_ack_window(severity) {
+ match severity {
+   "class_i"   => 86400,    // 24 hours
+   "class_ii"  => 259200,   // 72 hours
+   "class_iii" => 604800,   // 7 days
+   _           => 259200
+ }
+}
+
+// --- Acknowledgement tracking ---
+
+fn make_ack_tracker(recall_id, expected_holders) {
+ {
+   recall_id:        recall_id,
+   expected_holders: expected_holders,
+   expected_count:   list.len(expected_holders),
+   acknowledged:     [],
+   resolved:         [],
+   silent:           []
+ }
+}
+
+fn record_ack(tracker, holder_id, timestamp_unix_secs) {
+ let already = list.any(tracker.acknowledged, fn(a) { a.holder_id == holder_id }) in
+ if already then tracker
+ else
+   let ack = { holder_id: holder_id, timestamp_unix_secs: timestamp_unix_secs } in
+   { ...tracker, acknowledged: list.append(tracker.acknowledged, ack) }
+}
+
+fn record_resolution(tracker, holder_id, resolution, quantity_destroyed,
+                    quantity_returned, timestamp_unix_secs) {
+ let res = {
+   holder_id:          holder_id,
+   resolution:         resolution,
+   quantity_destroyed: quantity_destroyed,
+   quantity_returned:  quantity_returned,
+   timestamp_unix_secs: timestamp_unix_secs
+ } in
+ { ...tracker, resolved: list.append(tracker.resolved, res) }
+}
+
+fn compute_silent(tracker, now_unix_secs, ack_deadline_ts) {
+ if now_unix_secs < ack_deadline_ts then tracker
+ else
+   let silent = list.filter(tracker.expected_holders, fn(holder_id) {
+     let acked = list.any(tracker.acknowledged, fn(a) { a.holder_id == holder_id }) in
+     !acked
+   }) in
+   let silent_records = list.map(silent, fn(holder_id) {
+     { holder_id: holder_id, detected_at: now_unix_secs }
+   }) in
+   { ...tracker, silent: silent_records }
+}
+
+fn ack_rate(tracker) {
+ if tracker.expected_count == 0 then 1.0
+ else
+   let acked = list.len(tracker.acknowledged) in
+   acked * 100 / tracker.expected_count
+}
+
+fn resolution_rate(tracker) {
+ if tracker.expected_count == 0 then 1.0
+ else
+   let resolved = list.len(tracker.resolved) in
+   resolved * 100 / tracker.expected_count
+}
+
+fn is_complete(tracker) {
+ list.len(tracker.resolved) == tracker.expected_count
+}
+
+fn pending_holders(tracker) {
+ list.filter(tracker.expected_holders, fn(holder_id) {
+   !list.any(tracker.resolved, fn(r) { r.holder_id == holder_id })
+ })
+}
+
+fn non_compliant_holders(tracker) {
+ list.map(tracker.silent, fn(s) { s.holder_id })
+}
+
+// --- Recall status ---
+
+fn recall_status(tracker, now_unix_secs, ack_deadline_ts) {
+ let updated = compute_silent(tracker, now_unix_secs, ack_deadline_ts) in
+ let total = updated.expected_count in
+ let acked = list.len(updated.acknowledged) in
+ let resolved = list.len(updated.resolved) in
+ let silent = list.len(updated.silent) in
+ let pending = total - resolved in
+ {
+   recall_id:         updated.recall_id,
+   total_holders:     total,
+   acknowledged:      acked,
+   resolved:          resolved,
+   silent:            silent,
+   pending:           pending,
+   ack_rate_pct:      if total > 0 then acked * 100 / total else 100,
+   resolution_rate_pct: if total > 0 then resolved * 100 / total else 100,
+   complete:          resolved == total,
+   overdue:           silent > 0,
+   non_compliant:     list.map(updated.silent, fn(s) { s.holder_id })
+ }
+}
+
+// --- Recall propagation plan ---
+// Given a recall and a list of current holders, produces the gossip topics
+// that must receive the recall claim — one topic per batch per holder.
+
+fn propagation_topics(recall, current_holders) {
+ list.flat_map(recall.affected_batch_ids, fn(batch_id) {
+   list.map(current_holders, fn(holder) {
+     hash.sha256_text(str.concat([recall.recall_id, ":", batch_id, ":", holder]))
+   })
+ })
+}
+
+fn affected_batches(recall) {
+ recall.affected_batch_ids
+}
+
+fn affects_batch(recall, batch_id) {
+ list.any(recall.affected_batch_ids, fn(b) { b == batch_id })
+}
+
+fn affects_lot(recall, lot_number) {
+ list.any(recall.affected_lot_numbers, fn(l) { l == lot_number })
+}
+
+// --- Recall chain reconstruction ---
+// From a list of provenance chain entries, extract the full recall picture
+
+fn extract_recall_events(chain) {
+ list.filter(chain, fn(e) { ev.is_recall_event(e) })
+}
+
+fn recall_issued_events(chain) {
+ list.filter(chain, fn(e) { e.event_kind == "recall_issued" })
+}
+
+fn recall_ack_events(chain) {
+ list.filter(chain, fn(e) { e.event_kind == "recall_acknowledged" })
+}
+
+fn recall_resolved_events(chain) {
+ list.filter(chain, fn(e) { e.event_kind == "recall_resolved" })
+}
+
+fn active_recalls(chain) {
+ let issued = recall_issued_events(chain) in
+ let resolved_ids = list.map(recall_resolved_events(chain), fn(e) {
+   rec.getOr(e.object, "recall_id", "")
+ }) in
+ list.filter(issued, fn(e) {
+   let recall_id = rec.getOr(e.object, "recall_id", "") in
+   !list.any(resolved_ids, fn(id) { id == recall_id })
+ })
+}
+
+fn recall_coverage(chain, recall_id) {
+ let acks = list.filter(recall_ack_events(chain), fn(e) {
+   rec.getOr(e.object, "recall_id", "") == recall_id
+ }) in
+ let resolutions = list.filter(recall_resolved_events(chain), fn(e) {
+   rec.getOr(e.object, "recall_id", "") == recall_id
+ }) in
+ {
+   recall_id:        recall_id,
+   acknowledgements: list.len(acks),
+   resolutions:      list.len(resolutions),
+   complete:         list.len(resolutions) > 0
+ }
+}
+
+// --- Silence detection ---
+// A holder that received a recall (has it in their batch subscription)
+// but has not acknowledged within the window is non-compliant.
+// This function produces a signed non-compliance record.
+
+fn make_silence_record(recall_id, batch_id, holder_id,
+                      deadline_ts, detected_at_ts) {
+ {
+   kind:        "recall_silence",
+   recall_id:   recall_id,
+   batch_id:    batch_id,
+   holder_id:   holder_id,
+   deadline_ts: deadline_ts,
+   detected_at: detected_at_ts,
+   overdue_secs: detected_at_ts - deadline_ts
+ }
+}
+
+fn silence_subject(recall_id, holder_id) {
+ str.concat(["sc:recall_silence:", recall_id, ":", holder_id])
+}
+
+export {
+ make_recall, recall_digest, recall_claim_space, recall_subject,
+ is_critical, ack_deadline, default_ack_window,
+ make_ack_tracker, record_ack, record_resolution, compute_silent,
+ ack_rate, resolution_rate, is_complete, pending_holders,
+ non_compliant_holders, recall_status,
+ propagation_topics, affected_batches, affects_batch, affects_lot,
+ extract_recall_events, recall_issued_events, recall_ack_events,
+ recall_resolved_events, active_recalls, recall_coverage,
+ make_silence_record, silence_subject
+}

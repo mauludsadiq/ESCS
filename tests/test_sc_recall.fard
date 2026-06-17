@@ -1,0 +1,249 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("../src/supply_chain/recall") as recall
+import("../src/supply_chain/jurisdictions") as jur
+
+let now = 1710000000
+let batch_id = "batch:LOT-2025-0042"
+let recall_id = "recall:FDA-2025-001"
+
+let holders = ["party:warehouse-a", "party:warehouse-b", "party:distributor-c"]
+
+let class_i_recall = recall.make_recall(
+  recall_id,
+  [batch_id, "batch:LOT-2025-0043"],
+  ["LOT-2025-0042", "LOT-2025-0043"],
+  "DRUG-001", "class_i",
+  "microbial contamination detected",
+  "oracle:fda-001",
+  "immediately quarantine and destroy all affected units",
+  "FDA-RECALL-2025-001",
+  86400
+)
+
+let class_ii_recall = recall.make_recall(
+  "recall:FDA-2025-002", ["batch:LOT-2025-0099"], ["LOT-2025-0099"],
+  "DRUG-002", "class_ii", "labeling error",
+  "oracle:fda-001", "return to manufacturer", "FDA-RECALL-2025-002",
+  259200
+)
+
+let class_iii_recall = recall.make_recall(
+  "recall:FDA-2025-003", ["batch:LOT-2025-0100"], ["LOT-2025-0100"],
+  "DRUG-003", "class_iii", "minor packaging defect",
+  "oracle:fda-001", "monitor and report", "FDA-RECALL-2025-003",
+  604800
+)
+
+test "make_recall has correct recall_id" {
+  class_i_recall.recall_id == recall_id
+}
+
+test "make_recall batch_count is correct" {
+  class_i_recall.batch_count == 2
+}
+
+test "make_recall severity is class_i" {
+  class_i_recall.severity == "class_i"
+}
+
+test "recall_digest starts with sha256:" {
+  str.starts_with(recall.recall_digest(class_i_recall), "sha256:")
+}
+
+test "recall_claim_space class_i is PHARMA_RECALL_V1" {
+  recall.recall_claim_space("class_i") == jur.PHARMA_RECALL_V1
+}
+
+test "recall_claim_space class_ii is PHARMA_RECALL_V1" {
+  recall.recall_claim_space("class_ii") == jur.PHARMA_RECALL_V1
+}
+
+test "recall_claim_space class_iii is SUPPLY_RECALL_V1" {
+  recall.recall_claim_space("class_iii") == jur.SUPPLY_RECALL_V1
+}
+
+test "recall_subject encodes recall_id and batch_id" {
+  let subject = recall.recall_subject(recall_id, batch_id) in
+  str.starts_with(subject, "sc:recall:")
+}
+
+test "is_critical true for class_i" {
+  recall.is_critical(class_i_recall) == true
+}
+
+test "is_critical false for class_ii" {
+  recall.is_critical(class_ii_recall) == false
+}
+
+test "default_ack_window class_i is 86400" {
+  recall.default_ack_window("class_i") == 86400
+}
+
+test "default_ack_window class_ii is 259200" {
+  recall.default_ack_window("class_ii") == 259200
+}
+
+test "default_ack_window class_iii is 604800" {
+  recall.default_ack_window("class_iii") == 604800
+}
+
+test "ack_deadline adds window to issued timestamp" {
+  recall.ack_deadline(class_i_recall, now) == now + 86400
+}
+
+test "affects_batch true for included batch" {
+  recall.affects_batch(class_i_recall, batch_id) == true
+}
+
+test "affects_batch false for excluded batch" {
+  recall.affects_batch(class_i_recall, "batch:unrelated") == false
+}
+
+test "affects_lot true for included lot" {
+  recall.affects_lot(class_i_recall, "LOT-2025-0042") == true
+}
+
+test "affects_lot false for excluded lot" {
+  recall.affects_lot(class_i_recall, "LOT-9999-0000") == false
+}
+
+test "make_ack_tracker has correct expected_count" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  tracker.expected_count == 3
+}
+
+test "record_ack adds acknowledgement" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  let t2 = recall.record_ack(tracker, "party:warehouse-a", now + 3600) in
+  list.len(t2.acknowledged) == 1
+}
+
+test "record_ack deduplicates same holder" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  let t2 = recall.record_ack(tracker, "party:warehouse-a", now + 3600) in
+  let t3 = recall.record_ack(t2, "party:warehouse-a", now + 7200) in
+  list.len(t3.acknowledged) == 1
+}
+
+test "record_resolution adds resolution" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  let t2 = recall.record_resolution(tracker, "party:warehouse-a",
+    "destroyed", 1000, 0, now + 7200) in
+  list.len(t2.resolved) == 1
+}
+
+test "ack_rate 0 with no acks" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  recall.ack_rate(tracker) == 0
+}
+
+test "ack_rate 100 when all acked" {
+  let tracker = recall.make_ack_tracker(recall_id, ["party:a"]) in
+  let t2 = recall.record_ack(tracker, "party:a", now + 100) in
+  recall.ack_rate(t2) == 100
+}
+
+test "is_complete false when not all resolved" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  recall.is_complete(tracker) == false
+}
+
+test "is_complete true when all resolved" {
+  let tracker = recall.make_ack_tracker(recall_id, ["party:a"]) in
+  let t2 = recall.record_resolution(tracker, "party:a", "destroyed", 100, 0, now) in
+  recall.is_complete(t2) == true
+}
+
+test "pending_holders returns unresolved holders" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  let t2 = recall.record_resolution(tracker, "party:warehouse-a", "destroyed", 100, 0, now) in
+  list.len(recall.pending_holders(t2)) == 2
+}
+
+test "compute_silent detects silent holders after deadline" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  let t2 = recall.record_ack(tracker, "party:warehouse-a", now + 100) in
+  let deadline = now + 86400 in
+  let t3 = recall.compute_silent(t2, now + 86401, deadline) in
+  list.len(t3.silent) == 2
+}
+
+test "compute_silent does not fire before deadline" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  let deadline = now + 86400 in
+  let t2 = recall.compute_silent(tracker, now + 1000, deadline) in
+  list.len(t2.silent) == 0
+}
+
+test "recall_status shows correct counts" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  let t2 = recall.record_ack(tracker, "party:warehouse-a", now + 100) in
+  let t3 = recall.record_resolution(t2, "party:warehouse-a", "destroyed", 100, 0, now + 200) in
+  let status = recall.recall_status(t3, now + 1000, now + 86400) in
+  status.acknowledged == 1 && status.resolved == 1 && status.total_holders == 3
+}
+
+test "recall_status overdue true after deadline with silence" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  let status = recall.recall_status(tracker, now + 86401, now + 86400) in
+  status.overdue == true
+}
+
+test "recall_status complete true when all resolved" {
+  let tracker = recall.make_ack_tracker(recall_id, ["party:a"]) in
+  let t2 = recall.record_resolution(tracker, "party:a", "destroyed", 100, 0, now) in
+  let status = recall.recall_status(t2, now + 1000, now + 86400) in
+  status.complete == true
+}
+
+test "non_compliant_holders returns silent holders" {
+  let tracker = recall.make_ack_tracker(recall_id, holders) in
+  let deadline = now + 86400 in
+  let t2 = recall.compute_silent(tracker, now + 86401, deadline) in
+  list.len(recall.non_compliant_holders(t2)) == 3
+}
+
+test "propagation_topics produces batch x holder topics" {
+  let topics = recall.propagation_topics(class_i_recall, holders) in
+  list.len(topics) == 6
+}
+
+test "make_silence_record has correct kind" {
+  let s = recall.make_silence_record(recall_id, batch_id,
+    "party:warehouse-a", now + 86400, now + 90000) in
+  s.kind == "recall_silence"
+}
+
+test "make_silence_record overdue_secs is correct" {
+  let s = recall.make_silence_record(recall_id, batch_id,
+    "party:warehouse-a", now + 86400, now + 90000) in
+  s.overdue_secs == 3600
+}
+
+test "silence_subject encodes recall and holder" {
+  let subject = recall.silence_subject(recall_id, "party:warehouse-a") in
+  str.starts_with(subject, "sc:recall_silence:")
+}
+
+test "active_recalls returns unresolved recalls" {
+  let chain = [
+    { event_kind: "recall_issued", object: { recall_id: "r1" } },
+    { event_kind: "recall_issued", object: { recall_id: "r2" } },
+    { event_kind: "recall_resolved", object: { recall_id: "r1" } }
+  ] in
+  let active = recall.active_recalls(chain) in
+  list.len(active) == 1
+}
+
+test "recall_coverage counts acks and resolutions" {
+  let chain = [
+    { event_kind: "recall_issued",       object: { recall_id: "r1" } },
+    { event_kind: "recall_acknowledged", object: { recall_id: "r1" } },
+    { event_kind: "recall_acknowledged", object: { recall_id: "r1" } },
+    { event_kind: "recall_resolved",     object: { recall_id: "r1" } }
+  ] in
+  let cov = recall.recall_coverage(chain, "r1") in
+  cov.acknowledgements == 2 && cov.resolutions == 1
+}
