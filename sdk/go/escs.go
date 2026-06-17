@@ -336,6 +336,14 @@ return now()
 return t
 }
 
+
+// --- Getters for Health ---
+func (h *Health) IsOk() bool { return h.OK }
+func (h *Health) GetService() string { return h.Service }
+func (h *Health) GetNodeID() string { return h.NodeID }
+func (h *Health) GetAnkaURL() string { return h.AnkaURL }
+func (h *Health) GetSupportedEvents() []string { return h.SupportedEvents }
+
 // --- Event methods ---
 
 func (c *Client) BatchCreated(ctx context.Context, r BatchCreatedRequest) (*Receipt, error) {
