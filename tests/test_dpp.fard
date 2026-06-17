@@ -1,0 +1,359 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("../src/interop/dpp") as dpp
+import("../src/interop/dpp_verticals") as dppv
+import("../src/supply_chain/event") as ev
+import("../src/supply_chain/provenance") as prov
+import("../src/supply_chain/jurisdictions") as jur
+
+let batch_id = "batch:DPP-TEST-2025-001"
+let now = 1710000000
+
+// --- Identity ---
+
+test "make_identity has correct batch_id" {
+  let id = dpp.make_identity(batch_id, "DRUG-001", "LOT-001",
+    "MODEL-X", "SN-001", now, now + 31536000) in
+  id.batch_id == batch_id
+}
+
+test "make_identity dpp_id starts with urn:escs:dpp:" {
+  let id = dpp.make_identity(batch_id, "DRUG-001", "LOT-001",
+    "MODEL-X", "SN-001", now, now + 31536000) in
+  str.starts_with(id.dpp_id, "urn:escs:dpp:")
+}
+
+// --- Manufacturer ---
+
+test "make_manufacturer has correct producer_id" {
+  let m = dpp.make_manufacturer("party:producer", "Acme Pharma",
+    "US", "facility:chi-01", "https://acme.com") in
+  m.producer_id == "party:producer"
+}
+
+// --- Materials ---
+
+test "make_material has correct substance" {
+  let m = dpp.make_material("organic_cotton", 100.0, true, false, false) in
+  m.substance == "organic_cotton" && m.is_recycled == true
+}
+
+test "make_materials has correct count" {
+  let mats = [
+    dpp.make_material("cotton", 80.0, true, false, false),
+    dpp.make_material("polyester", 20.0, false, false, false)
+  ] in
+  let m = dpp.make_materials(mats, 40.0, false, true) in
+  m.material_count == 2 && m.recycled_content_pct == 40.0
+}
+
+// --- Carbon footprint ---
+
+test "make_carbon_footprint has correct total" {
+  let cf = dpp.make_carbon_footprint(
+    1500.0, 100.0, 200.0, 1200.0,
+    "GHG Protocol", 2025, "Verra", "VERRA-001") in
+  cf.total_kgco2e == 1500.0
+}
+
+// --- Compliance ---
+
+test "make_compliance_declaration has correct regulation" {
+  let d = dpp.make_compliance_declaration(
+    "EU RoHS 2011/65/EU", "self_declaration",
+    "", "ROHS-2025-001", 0, true) in
+  d.regulation == "EU RoHS 2011/65/EU" && d.compliant == true
+}
+
+test "make_compliance has correct declaration count" {
+  let decls = [
+    dpp.make_compliance_declaration("EU RoHS", "self_declaration", "", "REF-001", 0, true),
+    dpp.make_compliance_declaration("EU REACH", "self_declaration", "", "REF-002", 0, true)
+  ] in
+  let c = dpp.make_compliance(decls, true, true, true, true) in
+  c.declaration_count == 2 && c.ce_marking == true
+}
+
+// --- Supply chain ---
+
+test "make_supply_chain_event has correct event_kind" {
+  let e = dpp.make_supply_chain_event(
+    "custody_transfer", now, "Chicago, IL",
+    "party:producer", "sha256:abc123", "SUPPLY.CUSTODY.v1", 2) in
+  e.event_kind == "custody_transfer" && e.witness_count == 2
+}
+
+test "make_supply_chain_event verified true for sha256 digest" {
+  let e = dpp.make_supply_chain_event(
+    "custody_transfer", now, "Chicago, IL",
+    "party:producer", "sha256:abc123", "SUPPLY.CUSTODY.v1", 2) in
+  e.verified == true
+}
+
+test "make_supply_chain_event verified false for empty digest" {
+  let e = dpp.make_supply_chain_event(
+    "custody_transfer", now, "Chicago, IL",
+    "party:producer", "", "SUPPLY.CUSTODY.v1", 0) in
+  e.verified == false
+}
+
+test "make_supply_chain has correct event_count" {
+  let events = [
+    dpp.make_supply_chain_event("batch_created", now, "Chicago", "", "sha256:d1", "SUPPLY.BATCH.v1", 1),
+    dpp.make_supply_chain_event("custody_transfer", now + 3600, "Chicago", "", "sha256:d2", "SUPPLY.CUSTODY.v1", 2)
+  ] in
+  let sc = dpp.make_supply_chain(events, "party:shipper", 3, true) in
+  sc.event_count == 2 && sc.current_holder == "party:shipper"
+}
+
+// --- End of life ---
+
+test "make_end_of_life has recyclable flag" {
+  let eol = dpp.make_end_of_life(
+    true, "Separate collection", "Remove battery first",
+    true, "https://parts.example.com", "Brand take-back", "IT") in
+  eol.recyclable == true && eol.spare_parts_available == true
+}
+
+// --- Recall ---
+
+test "make_dpp_recall has correct severity" {
+  let r = dpp.make_dpp_recall(
+    "recall:FDA-001", "class_i", "contamination",
+    now, false, "", "sha256:abc") in
+  r.severity == "class_i" && r.resolved == false
+}
+
+// --- Integrity ---
+
+test "make_integrity has anka_audit_url" {
+  let i = dpp.make_integrity(
+    batch_id, "http://localhost:18080",
+    "sha256:chaindigest", "ed25519:node", now) in
+  str.starts_with(i.anka_audit_url, "http://localhost:18080/audit/trail/")
+}
+
+test "make_integrity dpp_subject starts with urn:escs:dpp:" {
+  let i = dpp.make_integrity(
+    batch_id, "http://localhost:18080",
+    "sha256:chaindigest", "ed25519:node", now) in
+  str.starts_with(i.dpp_subject, "urn:escs:dpp:")
+}
+
+// --- Access ---
+
+test "make_access has correct dpp_url" {
+  let a = dpp.make_access(batch_id, "http://localhost:7710", "") in
+  str.starts_with(a.dpp_url, "http://localhost:7710/dpp/")
+}
+
+test "make_access qr_data equals dpp_url" {
+  let a = dpp.make_access(batch_id, "http://localhost:7710", "") in
+  a.qr_data == a.dpp_url
+}
+
+// --- Full DPP assembly ---
+
+let sample_events = [
+  dpp.make_supply_chain_event("batch_created",    now,        "Chicago, IL", "party:producer", "sha256:d1", "SUPPLY.BATCH.v1",     1),
+  dpp.make_supply_chain_event("custody_transfer", now + 3600, "Chicago, IL", "party:shipper",  "sha256:d2", "SUPPLY.CUSTODY.v1",   2),
+  dpp.make_supply_chain_event("customs_cleared",  now + 7200, "JFK",         "CBP",            "sha256:d3", "SUPPLY.CUSTOMS.US.v1",1)
+]
+
+let sample_certs = [
+  dpp.make_dpp_certification("eu_reach", "certifier:tuv", "REACH-2025-001",
+    now, now + 31536000, "full batch", "sha256:cert1"),
+  dpp.make_dpp_certification("eu_rohs", "certifier:tuv", "ROHS-2025-001",
+    now, now + 31536000, "full batch", "sha256:cert2")
+]
+
+let sample_recalls = []
+
+let full_dpp = dpp.make_dpp(
+  dpp.make_identity(batch_id, "CPU-001", "LOT-001", "Intel Core X", "", now, 0),
+  dpp.make_manufacturer("party:tsmc", "TSMC", "TW", "facility:fab3", ""),
+  dpp.make_materials([dpp.make_material("silicon", 95.0, false, false, false)], 0.0, false, true),
+  dpp.make_carbon_footprint(850.0, 50.0, 100.0, 700.0, "GHG Protocol", 2025, "", ""),
+  dpp.make_compliance([
+    dpp.make_compliance_declaration("EU RoHS", "self_declaration", "", "ROHS-001", 0, true),
+    dpp.make_compliance_declaration("EU REACH", "third_party", "", "REACH-001", 0, true)
+  ], true, true, true, true),
+  dpp.make_supply_chain(sample_events, "party:distributor", 4, true),
+  sample_certs,
+  sample_recalls,
+  dpp.make_end_of_life(true, "WEEE collection", "Remove RAM first", true, "", "WEEE scheme", "IT"),
+  dpp.make_access(batch_id, "http://localhost:7710", ""),
+  dpp.make_integrity(batch_id, "http://localhost:18080", "sha256:d1", "ed25519:node", now)
+)
+
+test "full DPP has correct dpp_type" {
+  full_dpp.dpp_type == "EUDigitalProductPassport"
+}
+
+test "full DPP regulation is EU ESPR" {
+  full_dpp.regulation == "EU/2024/ESPR"
+}
+
+test "full DPP supply chain has 3 events" {
+  full_dpp.supply_chain.event_count == 3
+}
+
+test "full DPP has 2 certifications" {
+  list.len(full_dpp.certifications) == 2
+}
+
+test "full DPP under_recall is false" {
+  full_dpp.under_recall == false
+}
+
+test "full DPP chain_integrity is true" {
+  full_dpp.supply_chain.chain_integrity == true
+}
+
+test "dpp_digest starts with sha256:" {
+  str.starts_with(dpp.dpp_digest(full_dpp), "sha256:")
+}
+
+test "dpp_summary has correct batch_id" {
+  let s = dpp.dpp_summary(full_dpp) in
+  s.batch_id == batch_id
+}
+
+test "dpp_summary has correct chain_events" {
+  let s = dpp.dpp_summary(full_dpp) in
+  s.chain_events == 3
+}
+
+test "dpp_summary ce_marking is true" {
+  let s = dpp.dpp_summary(full_dpp) in
+  s.ce_marking == true
+}
+
+// --- Vertical profiles ---
+
+test "electronics vertical required fields includes end_of_life" {
+  let fields = dpp.required_fields_for("electronics") in
+  list.any(fields, fn(f) { f == "end_of_life" })
+}
+
+test "apparel vertical required fields includes carbon_footprint" {
+  let fields = dpp.required_fields_for("apparel") in
+  list.any(fields, fn(f) { f == "carbon_footprint" })
+}
+
+test "mandate_year electronics is 2028" {
+  dpp.mandate_year_for("electronics") == 2028
+}
+
+test "mandate_year apparel is 2027" {
+  dpp.mandate_year_for("apparel") == 2027
+}
+
+test "is_mandated electronics true for 2028" {
+  dpp.is_mandated("electronics", 2028) == true
+}
+
+test "is_mandated electronics false for 2027" {
+  dpp.is_mandated("electronics", 2027) == false
+}
+
+test "is_mandated apparel true for 2027" {
+  dpp.is_mandated("apparel", 2027) == true
+}
+
+// --- Vertical DPP builders ---
+
+let elec_dpp = dppv.electronics_dpp(
+  batch_id, "CPU-001", "LOT-001", "Intel Core X",
+  "party:tsmc", "TSMC", "TW", "facility:fab3",
+  [dpp.make_material("silicon", 95.0, false, false, false)],
+  5.0, 850.0, 700.0,
+  "ROHS-2025-001", "REACH-2025-001", "RMI-2025-001", "WEEE-2025-001",
+  sample_events, sample_certs, sample_recalls,
+  "http://localhost:18080", "ed25519:node", now, now
+)
+
+test "electronics_dpp has correct dpp_type" {
+  elec_dpp.dpp_type == "EUDigitalProductPassport"
+}
+
+test "electronics_dpp rohs_compliant is true" {
+  elec_dpp.compliance.rohs_compliant == true
+}
+
+test "electronics_dpp reach_compliant is true" {
+  elec_dpp.compliance.reach_compliant == true
+}
+
+test "electronics_dpp weee_registered is true" {
+  elec_dpp.compliance.weee_registered == true
+}
+
+test "electronics_dpp has 4 compliance declarations" {
+  elec_dpp.compliance.declaration_count == 4
+}
+
+test "electronics_dpp end_of_life recyclable" {
+  elec_dpp.end_of_life.recyclable == true
+}
+
+let apparel_dpp_val = dppv.apparel_dpp(
+  batch_id, "TSHIRT-001", "LOT-APP-001", "Organic Tee",
+  "party:factory", "Dhaka Textiles", "BD", "facility:dhaka-01",
+  [dpp.make_material("organic_cotton", 100.0, true, false, false)],
+  0.0, 12.5,
+  "GOTS-2025-001", "FLO-2025-001", "SEDEX-2025-001", "BD",
+  sample_events, sample_certs, sample_recalls,
+  "http://localhost:18080", "ed25519:node", now, now
+)
+
+test "apparel_dpp has correct dpp_type" {
+  apparel_dpp_val.dpp_type == "EUDigitalProductPassport"
+}
+
+test "apparel_dpp has 3 compliance declarations" {
+  apparel_dpp_val.compliance.declaration_count == 3
+}
+
+test "apparel_dpp carbon total is 12.5" {
+  apparel_dpp_val.carbon_footprint.total_kgco2e == 12.5
+}
+
+// --- from_provenance builder ---
+
+let chain = [
+  prov.make_chain_entry("batch_created",    jur.SUPPLY_BATCH_V1,    "sha256:p1", str.concat(["sc:batch_created:", batch_id]),    now,        "ed25519:node", { batch_id: batch_id }, ["w1"], []),
+  prov.make_chain_entry("custody_transfer", jur.SUPPLY_CUSTODY_V1,  "sha256:p2", str.concat(["sc:custody_transfer:", batch_id]), now + 3600, "ed25519:node", { to_party: "party:shipper" }, ["w2","w3"], []),
+  prov.make_chain_entry("inspection_passed",jur.SUPPLY_INSPECTION_V1,"sha256:p3",str.concat(["sc:inspection_passed:", batch_id]),now + 7200, "ed25519:node", { inspector_id: "inspector:001" }, ["w4"], [])
+]
+
+let from_prov_dpp = dppv.from_provenance(
+  batch_id, "electronics", chain, [], [],
+  { product_code: "CPU-001", lot_number: "LOT-001",
+    producer_id: "party:tsmc", producer_name: "TSMC",
+    country: "TW", facility_id: "facility:fab3",
+    manufacture_date: now, expiry_date: 0 },
+  "http://localhost:18080", "ed25519:node", now
+)
+
+test "from_provenance dpp_type correct" {
+  from_prov_dpp.dpp_type == "EUDigitalProductPassport"
+}
+
+test "from_provenance supply chain has 3 events" {
+  from_prov_dpp.supply_chain.event_count == 3
+}
+
+test "from_provenance total_witnesses is 4" {
+  from_prov_dpp.supply_chain.total_witnesses == 4
+}
+
+test "from_provenance under_recall is false" {
+  from_prov_dpp.under_recall == false
+}
+
+test "from_provenance dpp_summary has correct batch_id" {
+  let s = dpp.dpp_summary(from_prov_dpp) in
+  s.batch_id == batch_id
+}

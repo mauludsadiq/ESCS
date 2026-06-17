@@ -1,0 +1,356 @@
+import("std/json") as json
+import("std/str") as str
+import("std/rec") as rec
+import("std/list") as list
+import("std/hash") as hash
+
+// dpp.fard — EU Digital Product Passport (DPP) reference implementation
+//
+// Implements the EU Ecodesign for Sustainable Products Regulation (ESPR)
+// Digital Product Passport schema, assembled from ESCS provenance events.
+//
+// Mandate timeline:
+//   2027: Batteries, Textiles, Apparel
+//   2028: Electronics, ICT equipment
+//   2029: Construction materials
+//   2030: Other categories
+//
+// A DPP is a structured record that travels with a product.
+// ESCS provides the cryptographic provenance layer beneath the DPP:
+//   Every DPP field is derived from a signed, witnessed ESCS event.
+//   The DPP digest links back to the Anka audit trail.
+//   Any field can be verified independently against the mesh.
+//
+// DPP structure (EU ESPR compliant):
+//   identity          — product identification
+//   manufacturer      — producer details
+//   materials         — substance composition, recycled content
+//   carbon_footprint  — lifecycle emissions
+//   compliance        — regulatory declarations
+//   supply_chain      — provenance events from ESCS
+//   certifications    — issued certifications from ESCS
+//   recalls           — active or resolved recalls from ESCS
+//   end_of_life       — recycling + disassembly instructions
+//   access            — QR code, data carrier, registry URL
+//   integrity         — ESCS digest, Anka audit URL, signature
+
+// --- DPP Identity ---
+
+fn make_identity(batch_id, product_code, lot_number,
+                 model_identifier, serial_number,
+                 manufacture_date, expiry_date) {
+  {
+    batch_id:         batch_id,
+    product_code:     product_code,
+    lot_number:       lot_number,
+    model_identifier: model_identifier,
+    serial_number:    serial_number,
+    manufacture_date: manufacture_date,
+    expiry_date:      expiry_date,
+    dpp_id:           str.concat(["urn:escs:dpp:", batch_id])
+  }
+}
+
+// --- DPP Manufacturer ---
+
+fn make_manufacturer(producer_id, name, country,
+                     facility_id, contact_url) {
+  {
+    producer_id:  producer_id,
+    name:         name,
+    country:      country,
+    facility_id:  facility_id,
+    contact_url:  contact_url
+  }
+}
+
+// --- DPP Materials ---
+
+fn make_material(substance, concentration_pct,
+                 is_recycled, is_hazardous, reach_svhc) {
+  {
+    substance:         substance,
+    concentration_pct: concentration_pct,
+    is_recycled:       is_recycled,
+    is_hazardous:      is_hazardous,
+    reach_svhc:        reach_svhc
+  }
+}
+
+fn make_materials(materials, recycled_content_pct,
+                  contains_hazardous, reach_compliant) {
+  {
+    materials:            materials,
+    recycled_content_pct: recycled_content_pct,
+    contains_hazardous:   contains_hazardous,
+    reach_compliant:      reach_compliant,
+    material_count:       list.len(materials)
+  }
+}
+
+// --- DPP Carbon Footprint ---
+
+fn make_carbon_footprint(total_kgco2e, scope_1_kgco2e,
+                         scope_2_kgco2e, scope_3_kgco2e,
+                         methodology, reference_year,
+                         verified_by, verification_ref) {
+  {
+    total_kgco2e:      total_kgco2e,
+    scope_1_kgco2e:    scope_1_kgco2e,
+    scope_2_kgco2e:    scope_2_kgco2e,
+    scope_3_kgco2e:    scope_3_kgco2e,
+    methodology:       methodology,
+    reference_year:    reference_year,
+    verified_by:       verified_by,
+    verification_ref:  verification_ref
+  }
+}
+
+// --- DPP Compliance ---
+
+fn make_compliance_declaration(regulation, declaration_type,
+                               notified_body, certificate_ref,
+                               valid_until, compliant) {
+  {
+    regulation:       regulation,
+    declaration_type: declaration_type,
+    notified_body:    notified_body,
+    certificate_ref:  certificate_ref,
+    valid_until:      valid_until,
+    compliant:        compliant
+  }
+}
+
+fn make_compliance(declarations, ce_marking,
+                   rohs_compliant, reach_compliant,
+                   weee_registered) {
+  {
+    declarations:    declarations,
+    ce_marking:      ce_marking,
+    rohs_compliant:  rohs_compliant,
+    reach_compliant: reach_compliant,
+    weee_registered: weee_registered,
+    declaration_count: list.len(declarations)
+  }
+}
+
+// --- DPP Supply Chain (from ESCS events) ---
+
+fn make_supply_chain_event(event_kind, timestamp_unix_secs,
+                           location, actor, digest_hex,
+                           claim_space, witness_count) {
+  {
+    event_kind:          event_kind,
+    timestamp_unix_secs: timestamp_unix_secs,
+    location:            location,
+    actor:               actor,
+    digest_hex:          digest_hex,
+    claim_space:         claim_space,
+    witness_count:       witness_count,
+    verified:            str.starts_with(digest_hex, "sha256:")
+  }
+}
+
+fn make_supply_chain(events, current_holder,
+                     total_witnesses, chain_integrity) {
+  {
+    events:           events,
+    event_count:      list.len(events),
+    current_holder:   current_holder,
+    total_witnesses:  total_witnesses,
+    chain_integrity:  chain_integrity
+  }
+}
+
+// --- DPP Certifications (from ESCS events) ---
+
+fn make_dpp_certification(cert_type, certifier_id,
+                          cert_ref, valid_from,
+                          valid_until, scope, digest_hex) {
+  {
+    cert_type:    cert_type,
+    certifier_id: certifier_id,
+    cert_ref:     cert_ref,
+    valid_from:   valid_from,
+    valid_until:  valid_until,
+    scope:        scope,
+    digest_hex:   digest_hex,
+    verified:     str.starts_with(digest_hex, "sha256:")
+  }
+}
+
+// --- DPP End of Life ---
+
+fn make_end_of_life(recyclable, recycling_instructions,
+                    disassembly_instructions, spare_parts_available,
+                    spare_parts_url, takeback_scheme,
+                    weee_category) {
+  {
+    recyclable:               recyclable,
+    recycling_instructions:   recycling_instructions,
+    disassembly_instructions: disassembly_instructions,
+    spare_parts_available:    spare_parts_available,
+    spare_parts_url:          spare_parts_url,
+    takeback_scheme:          takeback_scheme,
+    weee_category:            weee_category
+  }
+}
+
+// --- DPP Recalls ---
+
+fn make_dpp_recall(recall_id, severity, reason,
+                   issued_at, resolved, resolution,
+                   digest_hex) {
+  {
+    recall_id:   recall_id,
+    severity:    severity,
+    reason:      reason,
+    issued_at:   issued_at,
+    resolved:    resolved,
+    resolution:  resolution,
+    digest_hex:  digest_hex
+  }
+}
+
+// --- DPP Integrity ---
+
+fn make_integrity(batch_id, anka_url, chain_digest,
+                  issuer_node_id, timestamp_unix_secs) {
+  let dpp_subject = str.concat(["urn:escs:dpp:", batch_id]) in
+  {
+    dpp_subject:         dpp_subject,
+    anka_audit_url:      str.concat([anka_url, "/audit/trail/", chain_digest]),
+    anka_query_url:      str.concat([anka_url, "/query/SUPPLY.BATCH.v1/sc:batch_created:", batch_id]),
+    chain_digest:        chain_digest,
+    issuer_node_id:      issuer_node_id,
+    timestamp_unix_secs: timestamp_unix_secs,
+    verified_on_mesh:    str.len(chain_digest) > 0
+  }
+}
+
+// --- DPP Access ---
+
+fn make_access(batch_id, adapter_url, registry_url) {
+  let dpp_url = str.concat([adapter_url, "/dpp/", batch_id]) in
+  {
+    dpp_url:      dpp_url,
+    qr_data:      dpp_url,
+    registry_url: registry_url,
+    data_carrier: "QR_CODE",
+    format:       "application/json+ld"
+  }
+}
+
+// --- Full DPP Assembly ---
+
+fn make_dpp(identity, manufacturer, materials, carbon_footprint,
+            compliance, supply_chain, certifications, recalls,
+            end_of_life, access, integrity) {
+  {
+    context:          "https://escs.supply/dpp/1.0/context.jsonld",
+    dpp_type:         "EUDigitalProductPassport",
+    schema_version:   "1.0",
+    regulation:       "EU/2024/ESPR",
+    identity:         identity,
+    manufacturer:     manufacturer,
+    materials:        materials,
+    carbon_footprint: carbon_footprint,
+    compliance:       compliance,
+    supply_chain:     supply_chain,
+    certifications:   certifications,
+    recalls:          recalls,
+    end_of_life:      end_of_life,
+    access:           access,
+    integrity:        integrity,
+    under_recall:     list.any(recalls, fn(r) { !r.resolved })
+  }
+}
+
+// --- DPP digest (for linking DPP to Anka) ---
+
+fn dpp_digest(dpp) {
+  hash.sha256_text(json.encode({
+    dpp_type:       dpp.dpp_type,
+    schema_version: dpp.schema_version,
+    identity:       dpp.identity,
+    integrity:      dpp.integrity
+  }))
+}
+
+// --- DPP summary (compact view) ---
+
+fn dpp_summary(dpp) {
+  {
+    dpp_id:           dpp.identity.dpp_id,
+    batch_id:         dpp.identity.batch_id,
+    product_code:     dpp.identity.product_code,
+    current_holder:   dpp.supply_chain.current_holder,
+    chain_events:     dpp.supply_chain.event_count,
+    certifications:   list.len(dpp.certifications),
+    under_recall:     dpp.under_recall,
+    ce_marking:       dpp.compliance.ce_marking,
+    rohs_compliant:   dpp.compliance.rohs_compliant,
+    reach_compliant:  dpp.compliance.reach_compliant,
+    chain_integrity:  dpp.supply_chain.chain_integrity,
+    dpp_url:          dpp.access.dpp_url
+  }
+}
+
+// --- Vertical profiles ---
+// Each vertical has different required DPP fields per EU ESPR
+
+fn required_fields_for(vertical) {
+  match vertical {
+    "pharma" => [
+      "identity", "manufacturer", "materials",
+      "compliance", "supply_chain", "recalls"
+    ],
+    "food" => [
+      "identity", "manufacturer", "materials",
+      "compliance", "supply_chain", "recalls", "certifications"
+    ],
+    "electronics" => [
+      "identity", "manufacturer", "materials",
+      "carbon_footprint", "compliance", "supply_chain",
+      "certifications", "end_of_life"
+    ],
+    "apparel" => [
+      "identity", "manufacturer", "materials",
+      "carbon_footprint", "compliance", "supply_chain", "certifications"
+    ],
+    "energy" => [
+      "identity", "manufacturer", "carbon_footprint",
+      "compliance", "supply_chain", "certifications"
+    ],
+    _ => ["identity", "manufacturer", "supply_chain"]
+  }
+}
+
+fn mandate_year_for(vertical) {
+  match vertical {
+    "apparel"     => 2027,
+    "electronics" => 2028,
+    "energy"      => 2027,
+    "pharma"      => 2029,
+    "food"        => 2029,
+    _             => 2030
+  }
+}
+
+fn is_mandated(vertical, year) {
+  mandate_year_for(vertical) <= year
+}
+
+export {
+  make_identity, make_manufacturer,
+  make_material, make_materials,
+  make_carbon_footprint,
+  make_compliance_declaration, make_compliance,
+  make_supply_chain_event, make_supply_chain,
+  make_dpp_certification,
+  make_end_of_life,
+  make_dpp_recall,
+  make_integrity, make_access,
+  make_dpp, dpp_digest, dpp_summary,
+  required_fields_for, mandate_year_for, is_mandated
+}

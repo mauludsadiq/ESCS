@@ -1,0 +1,224 @@
+import("std/list") as list
+import("std/rec") as rec
+import("./dpp") as dpp
+
+// dpp_verticals.fard — EU DPP profiles per vertical
+//
+// Each vertical has specific DPP requirements under EU ESPR.
+// These factory functions assemble a complete DPP for each vertical
+// from ESCS provenance data.
+
+// --- Electronics DPP (mandate: 2028) ---
+// Required: materials (REACH/RoHS), carbon footprint, end-of-life (WEEE),
+// conflict minerals, repairability score
+
+fn electronics_dpp(batch_id, product_code, lot_number,
+                   model, producer_id, producer_name,
+                   producer_country, facility_id,
+                   materials_list, recycled_pct,
+                   carbon_total, carbon_scope3,
+                   rohs_cert_ref, reach_cert_ref,
+                   conflict_free_cert_ref, weee_ref,
+                   supply_chain_events, certifications,
+                   recalls, anka_url, issuer_node_id,
+                   manufacture_date, timestamp) {
+  let identity = dpp.make_identity(
+    batch_id, product_code, lot_number, model, "", manufacture_date, 0) in
+  let manufacturer = dpp.make_manufacturer(
+    producer_id, producer_name, producer_country, facility_id, "") in
+  let materials = dpp.make_materials(
+    materials_list, recycled_pct, false, true) in
+  let carbon = dpp.make_carbon_footprint(
+    carbon_total, 0.0, 0.0, carbon_scope3,
+    "GHG Protocol Product Standard", 2025, "", "") in
+  let compliance = dpp.make_compliance([
+    dpp.make_compliance_declaration("EU RoHS 2011/65/EU", "self_declaration", "", rohs_cert_ref, 0, true),
+    dpp.make_compliance_declaration("EU REACH 1907/2006", "self_declaration", "", reach_cert_ref, 0, true),
+    dpp.make_compliance_declaration("Dodd-Frank 1502", "third_party_audit", "", conflict_free_cert_ref, 0, true),
+    dpp.make_compliance_declaration("EU WEEE 2012/19/EU", "registration", "", weee_ref, 0, true)
+  ], true, true, true, true) in
+  let supply_chain = dpp.make_supply_chain(
+    supply_chain_events, "", 0, true) in
+  let eol = dpp.make_end_of_life(
+    true, "Separate collection required — WEEE category",
+    "Disassembly guide available at manufacturer website",
+    true, "", "EU WEEE take-back scheme", "IT equipment") in
+  let access = dpp.make_access(batch_id, "http://localhost:7710", "") in
+  let integrity = dpp.make_integrity(
+    batch_id, anka_url, "", issuer_node_id, timestamp) in
+  dpp.make_dpp(identity, manufacturer, materials, carbon,
+               compliance, supply_chain, certifications, recalls,
+               eol, access, integrity)
+}
+
+// --- Apparel DPP (mandate: 2027) ---
+// Required: fiber composition, recycled content, country of origin,
+// labor compliance, carbon footprint, care instructions
+
+fn apparel_dpp(batch_id, product_code, lot_number,
+               model, producer_id, producer_name,
+               producer_country, facility_id,
+               fiber_composition, recycled_pct,
+               carbon_total,
+               gots_cert_ref, fair_trade_cert_ref,
+               labor_cert_ref, origin_country,
+               supply_chain_events, certifications,
+               recalls, anka_url, issuer_node_id,
+               manufacture_date, timestamp) {
+  let identity = dpp.make_identity(
+    batch_id, product_code, lot_number, model, "", manufacture_date, 0) in
+  let manufacturer = dpp.make_manufacturer(
+    producer_id, producer_name, producer_country, facility_id, "") in
+  let materials = dpp.make_materials(
+    fiber_composition, recycled_pct, false, false) in
+  let carbon = dpp.make_carbon_footprint(
+    carbon_total, 0.0, 0.0, carbon_total * 0.8,
+    "Higg Index", 2025, "", "") in
+  let compliance = dpp.make_compliance([
+    dpp.make_compliance_declaration("GOTS 7.0", "third_party_cert", "", gots_cert_ref, 0, true),
+    dpp.make_compliance_declaration("Fairtrade Standard", "third_party_cert", "", fair_trade_cert_ref, 0, true),
+    dpp.make_compliance_declaration("ILO Core Conventions", "audit", "", labor_cert_ref, 0, true)
+  ], false, false, false, false) in
+  let supply_chain = dpp.make_supply_chain(
+    supply_chain_events, "", 0, true) in
+  let eol = dpp.make_end_of_life(
+    true, "Machine wash 30C, tumble dry low",
+    "Separate seams at collar and cuffs",
+    false, "", "Brand take-back programme", "") in
+  let access = dpp.make_access(batch_id, "http://localhost:7710", "") in
+  let integrity = dpp.make_integrity(
+    batch_id, anka_url, "", issuer_node_id, timestamp) in
+  dpp.make_dpp(identity, manufacturer, materials, carbon,
+               compliance, supply_chain, certifications, recalls,
+               eol, access, integrity)
+}
+
+// --- Energy / Battery DPP (mandate: 2027) ---
+// Required: chemistry, capacity, carbon footprint, recycled content,
+// state of health, supply chain (cobalt/lithium sourcing)
+
+fn battery_dpp(batch_id, product_code, lot_number,
+               model, producer_id, producer_name,
+               producer_country, facility_id,
+               chemistry, capacity_kwh, recycled_cobalt_pct,
+               carbon_total, rec_cert_ref, carbon_cert_ref,
+               supply_chain_events, certifications,
+               recalls, anka_url, issuer_node_id,
+               manufacture_date, timestamp) {
+  let identity = dpp.make_identity(
+    batch_id, product_code, lot_number, model, "", manufacture_date, 0) in
+  let manufacturer = dpp.make_manufacturer(
+    producer_id, producer_name, producer_country, facility_id, "") in
+  let materials = dpp.make_materials([
+    dpp.make_material(chemistry, 100.0, false, false, false)
+  ], recycled_cobalt_pct, false, false) in
+  let carbon = dpp.make_carbon_footprint(
+    carbon_total, 0.0, 0.0, carbon_total * 0.6,
+    "EU Battery Regulation Carbon Footprint Methodology", 2025,
+    "Verra", carbon_cert_ref) in
+  let compliance = dpp.make_compliance([
+    dpp.make_compliance_declaration("EU Battery Regulation 2023/1542", "third_party_cert", "", rec_cert_ref, 0, true),
+    dpp.make_compliance_declaration("Verra VCS Carbon Standard", "third_party_cert", "", carbon_cert_ref, 0, true)
+  ], true, false, false, false) in
+  let supply_chain = dpp.make_supply_chain(
+    supply_chain_events, "", 0, true) in
+  let eol = dpp.make_end_of_life(
+    true, "Return to certified battery recycler — do not dispose in general waste",
+    "Discharge to <5% before disassembly",
+    false, "", "EU Battery take-back scheme", "Battery") in
+  let access = dpp.make_access(batch_id, "http://localhost:7710", "") in
+  let integrity = dpp.make_integrity(
+    batch_id, anka_url, "", issuer_node_id, timestamp) in
+  dpp.make_dpp(identity, manufacturer, materials, carbon,
+               compliance, supply_chain, certifications, recalls,
+               eol, access, integrity)
+}
+
+// --- Generic DPP builder from ESCS provenance data ---
+
+fn from_provenance(batch_id, vertical, provenance_chain,
+                   certifications, recalls,
+                   product_meta, anka_url,
+                   issuer_node_id, timestamp) {
+  let identity = dpp.make_identity(
+    batch_id,
+    rec.getOr(product_meta, "product_code", ""),
+    rec.getOr(product_meta, "lot_number", ""),
+    rec.getOr(product_meta, "model", ""),
+    "",
+    rec.getOr(product_meta, "manufacture_date", 0),
+    rec.getOr(product_meta, "expiry_date", 0)
+  ) in
+  let manufacturer = dpp.make_manufacturer(
+    rec.getOr(product_meta, "producer_id", ""),
+    rec.getOr(product_meta, "producer_name", ""),
+    rec.getOr(product_meta, "country", ""),
+    rec.getOr(product_meta, "facility_id", ""),
+    rec.getOr(product_meta, "contact_url", "")
+  ) in
+  let custody_events = list.filter(provenance_chain, fn(e) {
+    e.event_kind == "custody_transfer"
+  }) in
+  let last_custody = if list.len(custody_events) > 0
+    then list.get(custody_events, list.len(custody_events) - 1)
+    else null in
+  let current_holder = if last_custody != null
+    then rec.getOr(rec.getOr(last_custody, "object", {}), "to_party", "")
+    else "" in
+  let total_witnesses = list.fold(provenance_chain, 0,
+    fn(acc, e) { acc + rec.getOr(e, "witness_count", 0) }) in
+  let supply_chain_events = list.map(provenance_chain, fn(e) {
+    dpp.make_supply_chain_event(
+      e.event_kind,
+      rec.getOr(e, "timestamp_unix_secs", 0),
+      rec.getOr(rec.getOr(e, "object", {}), "location", ""),
+      "",
+      rec.getOr(e, "digest_hex", ""),
+      rec.getOr(e, "claim_space", ""),
+      rec.getOr(e, "witness_count", 0)
+    )
+  }) in
+  let supply_chain = dpp.make_supply_chain(
+    supply_chain_events, current_holder,
+    total_witnesses, true) in
+  let dpp_certs = list.map(certifications, fn(c) {
+    dpp.make_dpp_certification(
+      rec.getOr(c, "cert_type", ""),
+      rec.getOr(c, "certifier_id", ""),
+      rec.getOr(c, "cert_ref", ""),
+      rec.getOr(c, "valid_from", 0),
+      rec.getOr(c, "valid_until", 0),
+      rec.getOr(c, "scope", ""),
+      rec.getOr(c, "digest_hex", "")
+    )
+  }) in
+  let dpp_recalls = list.map(recalls, fn(r) {
+    dpp.make_dpp_recall(
+      rec.getOr(rec.getOr(r, "object", {}), "recall_id", ""),
+      rec.getOr(rec.getOr(r, "object", {}), "severity", ""),
+      rec.getOr(rec.getOr(r, "object", {}), "reason", ""),
+      rec.getOr(r, "timestamp_unix_secs", 0),
+      r.event_kind == "recall_resolved",
+      "",
+      rec.getOr(r, "digest_hex", "")
+    )
+  }) in
+  let materials = dpp.make_materials([], 0.0, false, false) in
+  let carbon = dpp.make_carbon_footprint(0.0, 0.0, 0.0, 0.0, "", 0, "", "") in
+  let compliance = dpp.make_compliance([], false, false, false, false) in
+  let eol = dpp.make_end_of_life(false, "", "", false, "", "", "") in
+  let access = dpp.make_access(batch_id, "http://localhost:7710", "") in
+  let integrity = dpp.make_integrity(
+    batch_id, anka_url,
+    if list.len(provenance_chain) > 0
+      then rec.getOr(list.head(provenance_chain), "digest_hex", "")
+      else "",
+    issuer_node_id, timestamp) in
+  dpp.make_dpp(identity, manufacturer, materials, carbon,
+               compliance, supply_chain, dpp_certs, dpp_recalls,
+               eol, access, integrity)
+}
+
+export {
+  electronics_dpp, apparel_dpp, battery_dpp, from_provenance
+}
