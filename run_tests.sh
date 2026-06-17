@@ -34,6 +34,7 @@ run_test tests/test_sc_live.fard
 run_test tests/test_sc_food_live.fard
 run_test tests/test_sc_elec_live.fard
 run_test tests/test_sc_apparel_live.fard
+run_test tests/test_sc_energy_live.fard
 
 echo ""
 echo "========================="

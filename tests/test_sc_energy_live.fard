@@ -1,0 +1,307 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("std/json") as json
+import("../src/supply_chain/bridge") as bridge
+import("../src/supply_chain/event") as ev
+import("../src/supply_chain/claim") as sc_claim
+import("../src/supply_chain/policy") as policy
+import("../src/supply_chain/provenance") as prov
+import("../src/supply_chain/jurisdictions") as jur
+import("../vendor/eos/src/kernel/kernel") as eos
+
+// ============================================================
+// ESCS Energy Supply Chain Live Test
+// Renewable energy — REC, carbon credits, grid provenance,
+// ISO 50001 energy management
+//
+// Scenario: offshore wind farm in Denmark generates renewable
+// energy, issues RECs, carbon credits, connects to EU grid,
+// certified under ISO 50001
+// ============================================================
+
+let k           = eos.new("escs-energy-live-node")
+let anka_client = bridge.make_client("http://localhost:18080")
+
+let batch_id  = "batch:ENERGY-WIND-2025-LIVE-001"
+let product   = "OFFSHORE-WIND-MWH-001"
+let lot       = "LOT-ENERGY-2025-LIVE-001"
+
+let t0 = 1710400000   // energy batch created (generation period)
+let t1 = t0 + 3600    // grid connection attested
+let t2 = t0 + 7200    // REC issued
+let t3 = t0 + 10800   // carbon credit issued
+let t4 = t0 + 14400   // ISO 50001 certification
+let t5 = t0 + 18000   // custody: generator -> grid operator
+let t6 = t0 + 21600   // custody: grid operator -> consumer
+let t7 = t0 + 25200   // EU customs / cross-border transfer
+let t8 = t0 + 28800   // origin attestation
+
+// --- Step 1: Energy batch created (generation period) ---
+
+let batch_event = ev.batch_created(
+ batch_id, product, 50000, "MWh",
+ "Horns Rev 3 Offshore Wind Farm, Denmark",
+ "party:orsted-001",
+ lot, t0, t0 + 2592000
+)
+
+test "energy step 1: batch_created publishes" {
+ let result = bridge.publish_batch_created(anka_client, k, batch_event, t0) in
+ result.published == true
+}
+
+test "energy step 1: batch_created is witnessed" {
+ let result = bridge.publish_batch_created(anka_client, k, batch_event, t0) in
+ result.witnessed == true
+}
+
+// --- Step 2: Grid connection origin attestation ---
+
+let origin_event = ev.origin_attested(
+ batch_id, "certifier:energinet-001", "DK",
+ "North Sea, Jutland Bay", "facility:horns-rev-3",
+ ["IEC-61400", "ENTSO-E-CERTIFIED"], []
+)
+
+test "energy step 2: grid origin attested with rep=10" {
+ let result = bridge.publish_origin(anka_client, k, origin_event, t8, 10) in
+ result.published == true
+}
+
+test "energy step 2: ENERGY_GRID_V1 requires RepMin(10)" {
+ policy.min_reputation_for(jur.ENERGY_GRID_V1) == 10
+}
+
+// --- Step 3: Renewable Energy Certificate (REC) issued ---
+
+let rec_cert = ev.certification_issued(
+ batch_id, "renewable_energy_certificate",
+ "certifier:air-001", "AIR-REC-2025-DK-001",
+ t0, t0 + 31536000,
+ "50,000 MWh certified renewable generation — offshore wind"
+)
+
+test "energy step 3: REC cert passes with rep=20" {
+ let result = bridge.publish_certification(anka_client, k, rec_cert, t2, 20) in
+ result.published == true
+}
+
+test "energy step 3: REC cert fails with rep=19" {
+ let result = bridge.publish_certification(anka_client, k, rec_cert, t2, 19) in
+ result.published == false
+}
+
+test "energy step 3: ENERGY_REC_V1 requires RepMin(20)" {
+ policy.min_reputation_for(jur.ENERGY_REC_V1) == 20
+}
+
+test "energy step 3: REC cert evidence contains certifier" {
+ let env = sc_claim.event_to_envelope(k, rec_cert, t2) in
+ list.any(env.claim.evidence_refs, fn(r) { r == "certifier:air-001" })
+}
+
+// --- Step 4: Carbon credit issued ---
+
+let carbon_cert = ev.certification_issued(
+ batch_id, "carbon_credit",
+ "certifier:verra-001", "VERRA-VCS-2025-001",
+ t0, t0 + 31536000,
+ "25,000 tCO2e avoided — verified carbon standard"
+)
+
+test "energy step 4: carbon credit passes with rep=20" {
+ let result = bridge.publish_certification(anka_client, k, carbon_cert, t3, 20) in
+ result.published == true
+}
+
+test "energy step 4: carbon credit fails with rep=19" {
+ let result = bridge.publish_certification(anka_client, k, carbon_cert, t3, 19) in
+ result.published == false
+}
+
+test "energy step 4: ENERGY_CARBON_V1 requires RepMin(20)" {
+ policy.min_reputation_for(jur.ENERGY_CARBON_V1) == 20
+}
+
+test "energy step 4: carbon cert evidence contains certifier and ref" {
+ let env = sc_claim.event_to_envelope(k, carbon_cert, t3) in
+ list.len(env.claim.evidence_refs) == 2
+}
+
+// --- Step 5: ISO 50001 energy management certification ---
+
+let iso_cert = ev.certification_issued(
+ batch_id, "iso_50001",
+ "certifier:dnv-001", "DNV-ISO50001-2025-001",
+ t0, t0 + 31536000,
+ "ISO 50001:2018 energy management system certified"
+)
+
+test "energy step 5: ISO 50001 cert passes with rep=20" {
+ let result = bridge.publish_certification(anka_client, k, iso_cert, t4, 20) in
+ result.published == true
+}
+
+test "energy step 5: ENERGY_ISO50001_V1 requires RepMin(20)" {
+ policy.min_reputation_for(jur.ENERGY_ISO50001_V1) == 20
+}
+
+// --- Step 6: Custody transfer generator -> grid operator ---
+
+let custody_1 = ev.custody_transfer(
+ batch_id,
+ "party:orsted-001",
+ "party:energinet-grid-001",
+ "Danish National Grid Connection Point",
+ 50000, "MWh", "grid_injection", "actor:grid-001"
+)
+
+test "energy step 6: custody generator->grid publishes" {
+ let result = bridge.publish_custody_transfer(anka_client, k, custody_1, t5) in
+ result.published == true
+}
+
+test "energy step 6: custody transfer is witnessed" {
+ let result = bridge.publish_custody_transfer(anka_client, k, custody_1, t5) in
+ result.witnessed == true
+}
+
+// --- Step 7: Custody transfer grid operator -> consumer ---
+
+let custody_2 = ev.custody_transfer(
+ batch_id,
+ "party:energinet-grid-001",
+ "party:consumer-de-001",
+ "German Grid Connection Point, TenneT",
+ 50000, "MWh", "grid_transfer", "actor:grid-002"
+)
+
+test "energy step 7: custody grid->consumer publishes" {
+ let result = bridge.publish_custody_transfer(anka_client, k, custody_2, t6) in
+ result.published == true
+}
+
+// --- Step 8: EU customs cross-border energy transfer ---
+
+let eu_customs = ev.customs_cleared(
+ batch_id, "EU-ENERGY-REGULATOR", "ACER-2025-DK-DE-001",
+ "DK-DE Cross-Border Interconnector", "DE", "actor:acer-001"
+)
+
+test "energy step 8: EU energy customs passes with rep=10" {
+ let result = bridge.publish_customs(anka_client, k, eu_customs, t7, 10) in
+ result.published == true
+}
+
+test "energy step 8: EU customs fails with rep=9" {
+ let result = bridge.publish_customs(anka_client, k, eu_customs, t7, 9) in
+ result.published == false
+}
+
+// --- Step 9: Grid sensor reading ---
+
+let grid_sensor = ev.sensor_reading(
+ batch_id, "sensor:grid-meter-001", "power_output",
+ "Horns Rev 3 Grid Connection",
+ 50000.0, "MWh", 45000.0, 55000.0, true
+)
+
+test "energy step 9: grid sensor reading publishes" {
+ let result = bridge.publish_event(anka_client, k, grid_sensor, t0 + 3600, 1) in
+ result.published == true
+}
+
+test "energy step 9: sensor reading in_range" {
+ grid_sensor.in_range == true
+}
+
+// --- Policy matrix verification ---
+
+test "energy policy: all 4 energy jurisdictions known" {
+ list.all(jur.ENERGY_ALL, fn(j) { jur.is_known(j) }) == true
+}
+
+test "energy policy: is_energy true for REC" {
+ jur.is_energy(jur.ENERGY_REC_V1) == true
+}
+
+test "energy policy: is_energy true for carbon" {
+ jur.is_energy(jur.ENERGY_CARBON_V1) == true
+}
+
+test "energy policy: is_energy true for grid" {
+ jur.is_energy(jur.ENERGY_GRID_V1) == true
+}
+
+test "energy policy: is_energy true for ISO 50001" {
+ jur.is_energy(jur.ENERGY_ISO50001_V1) == true
+}
+
+test "energy policy: is_energy false for pharma" {
+ jur.is_energy(jur.PHARMA_FDA_DSCSA_V1) == false
+}
+
+test "energy policy: vertical_of REC is energy" {
+ jur.vertical_of(jur.ENERGY_REC_V1) == "energy"
+}
+
+// --- Provenance analysis ---
+
+let energy_chain = [
+ prov.make_chain_entry("batch_created",        jur.SUPPLY_BATCH_V1,      "sha256:en1", str.concat(["sc:batch_created:", batch_id]),        t0, k.keypair.node_id, { batch_id: batch_id, quantity: 50000 }, ["w1"], []),
+ prov.make_chain_entry("origin_attested",      jur.SUPPLY_ORACLE_V1,     "sha256:en2", str.concat(["sc:origin_attested:", batch_id]),      t8, k.keypair.node_id, { country_of_origin: "DK" }, ["w2"], []),
+ prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,    "sha256:en3", str.concat(["sc:certification_issued:", batch_id]), t2, k.keypair.node_id, { cert_type: "renewable_energy_certificate" }, ["w3"], []),
+ prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,    "sha256:en4", str.concat(["sc:certification_issued:", batch_id]), t3, k.keypair.node_id, { cert_type: "carbon_credit" }, ["w4"], []),
+ prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,    "sha256:en5", str.concat(["sc:certification_issued:", batch_id]), t4, k.keypair.node_id, { cert_type: "iso_50001" }, ["w5"], []),
+ prov.make_chain_entry("custody_transfer",     jur.SUPPLY_CUSTODY_V1,    "sha256:en6", str.concat(["sc:custody_transfer:", batch_id]),     t5, k.keypair.node_id, { from_party: "party:orsted-001", to_party: "party:energinet-grid-001" }, ["w6"], []),
+ prov.make_chain_entry("custody_transfer",     jur.SUPPLY_CUSTODY_V1,    "sha256:en7", str.concat(["sc:custody_transfer:", batch_id]),     t6, k.keypair.node_id, { from_party: "party:energinet-grid-001", to_party: "party:consumer-de-001" }, ["w7"], []),
+ prov.make_chain_entry("customs_cleared",      jur.SUPPLY_CUSTOMS_EU_V1, "sha256:en8", str.concat(["sc:customs_cleared:", batch_id]),      t7, k.keypair.node_id, { clearance_ref: "ACER-2025-DK-DE-001" }, ["w8"], []),
+ prov.make_chain_entry("sensor_reading",       jur.SUPPLY_SENSOR_V1,     "sha256:en9", str.concat(["sc:sensor_reading:", batch_id]),       t0 + 3600, k.keypair.node_id, { value: 50000.0, in_range: true }, ["w9"], [])
+]
+
+let energy_prov = prov.make_provenance(
+ batch_id, energy_chain, [],
+ "party:consumer-de-001", true, 9, 0
+)
+
+test "energy provenance: chain_length is 9" {
+ energy_prov.chain_length == 9
+}
+
+test "energy provenance: under_recall is false" {
+ energy_prov.under_recall == false
+}
+
+test "energy provenance: has_breach is false" {
+ prov.has_breach(energy_prov) == false
+}
+
+test "energy provenance: 2 custody transfers" {
+ list.len(prov.events_by_kind(energy_prov, "custody_transfer")) == 2
+}
+
+test "energy provenance: 3 certifications" {
+ list.len(prov.events_by_kind(energy_prov, "certification_issued")) == 3
+}
+
+test "energy provenance: current_holder is German consumer" {
+ energy_prov.current_holder == "party:consumer-de-001"
+}
+
+test "energy provenance: fully_witnessed is true" {
+ prov.fully_witnessed(energy_prov) == true
+}
+
+test "energy provenance: chain_integrity is true" {
+ energy_prov.chain_integrity == true
+}
+
+test "energy provenance: total_witnesses is 9" {
+ energy_prov.total_witnesses == 9
+}
+
+test "energy provenance: events_in_window covers certification period" {
+ let window = prov.events_in_window(energy_prov, t2, t4) in
+ list.len(window) == 3
+}
