@@ -16,18 +16,21 @@ Deploy anywhere with Docker. Connect via standard HTTP.
 
 ## By the numbers
 
-   6,823 lines of FARD
-     465 tests, 0 failures
+   7,621 lines of FARD
+     506 FARD tests, 0 failures
+      15 Go SDK tests, 0 failures
+      21 Java SDK tests, 0 failures
+      27 commits
        8 supply chain modules
        4 service modules
-      14 test files
-      23 commits
+       1 interop module (GS1 EPCIS 2.0)
       42 jurisdictions across 5 verticals
       18 event types
       42 gate policies
        6 oracle types
        5 verticals live tested end-to-end
-       2 client SDKs (Python, Node.js)
+       4 client SDKs (Python, Node.js, Go, Java)
+       1 OpenAPI 3.0.3 specification
        1 provenance dashboard
 
 ---
@@ -45,28 +48,71 @@ Deploy anywhere with Docker. Connect via standard HTTP.
            "location":"Chicago, IL","quantity":1000,"unit":"units"}'
 
    # Response
-   {"ok":true,"published":true,"witnessed":true,
-    "claim_space":"SUPPLY.CUSTODY.v1",
-    "digest":"sha256:...",
-    "receipt_url":"http://localhost:18080/audit/trail/sha256:..."}
+   {
+     "ok": true,
+     "published": true,
+     "witnessed": true,
+     "claim_space": "SUPPLY.CUSTODY.v1",
+     "digest": "sha256:...",
+     "receipt_url": "http://localhost:18080/audit/trail/sha256:..."
+   }
 
-   # Python SDK
+---
+
+## Client SDKs
+
+All four SDKs wrap the adapter HTTP API. Institutions never handle
+keypairs, signing, or FARD. They call methods and receive receipts.
+
+### Python
+
+   pip install requests
+
    from escs import ESCSClient
    client = ESCSClient("http://localhost:7710")
-   r = client.custody_transfer("batch:LOT-001","party:a","party:b","Chicago",1000,"units")
-   print(r.digest)      # sha256:...
-   print(r.witnessed)   # True
+   r = client.custody_transfer(
+       batch_id="batch:LOT-001", from_party="party:a",
+       to_party="party:b", location="Chicago", quantity=1000, unit="units"
+   )
+   print(r.digest)       # sha256:...
+   print(r.witnessed)    # True
+   print(r.receipt_url)  # http://...
 
-   # Node.js SDK
+### Node.js (Node 18+, no dependencies)
+
    const { ESCSClient } = require("./escs")
    const client = new ESCSClient("http://localhost:7710")
    const r = await client.custodyTransfer({
-     batchId: "batch:LOT-001", from: "party:a", to: "party:b",
-     location: "Chicago", quantity: 1000, unit: "units"
+       batchId: "batch:LOT-001", from: "party:a", to: "party:b",
+       location: "Chicago", quantity: 1000, unit: "units"
    })
+   console.log(r.digest, r.witnessed)
 
-   # Dashboard
-   open http://localhost:8080
+### Go
+
+   client := escs.NewClient("http://localhost:7710")
+   r, err := client.CustodyTransfer(ctx, escs.CustodyTransferRequest{
+       BatchID: "batch:LOT-001", From: "party:a", To: "party:b",
+       Location: "Chicago", Quantity: 1000, Unit: "units",
+   })
+   fmt.Println(r.Digest, r.Witnessed)
+
+### Java (Java 11+, jackson-databind)
+
+   ESCSClient client = new ESCSClient("http://127.0.0.1:7710");
+   Receipt r = client.custodyTransfer(
+       ESCSClient.CustodyTransferRequest.builder()
+           .batchId("batch:LOT-001").from("party:a").to("party:b")
+           .location("Chicago").quantity(1000).unit("units")
+           .build()
+   );
+   System.out.println(r.getDigest() + " " + r.isWitnessed());
+
+### OpenAPI
+
+   sdk/openapi/escs.openapi.json — OpenAPI 3.0.3 specification
+   Auto-generates clients in any language via openapi-generator:
+   openapi-generator generate -i escs.openapi.json -g rust -o sdk/rust
 
 ---
 
@@ -90,12 +136,12 @@ Deploy anywhere with Docker. Connect via standard HTTP.
                    permanent audit trail
                                |
                    Dashboard (port 8080)
-                   provenance chain reconstruction
+                   EPCIS 2.0 export
+                   provenance reconstruction
 
 Institutions connect via standard HTTP. Internal systems (SAP, Oracle,
-legacy ERP) POST JSON to the adapter. The adapter handles all cryptography,
-signing, gate evaluation, and Anka publication. The institution never
-runs FARD or manages keypairs. Deploy with Docker in minutes.
+legacy ERP) POST JSON to the adapter. The adapter handles all cryptography.
+Deploy with Docker in minutes. No FARD knowledge required.
 
 ---
 
@@ -131,19 +177,16 @@ Covers labor compliance under ILO core conventions and SA8000, country of
 origin, GOTS organic fiber certification, and Fairtrade International
 certification. Labor compliance and fair trade require RepMin(20); origin
 attestation requires RepMin(10). Certification revocation is a first-class
-event — a signed record of why a certification was withdrawn. Live tested:
-organic cotton t-shirts from Bangladesh through Chittagong Port, UK customs
-at Felixstowe, and Amsterdam distribution to EU retailer.
+event. Live tested: organic cotton t-shirts from Bangladesh through Chittagong
+Port, UK customs Felixstowe, and Amsterdam distribution to EU retailer.
 
 ### Energy
 Covers Renewable Energy Certificates (RECs), carbon credits under Verra VCS,
 grid provenance for cross-border transfers, and ISO 50001 energy management
-certification. RECs and carbon credits require RepMin(20) from accredited
-registries; grid provenance requires RepMin(10). Energy custody transfers
-use grid-native handoff methods (grid_injection, grid_transfer). Live tested:
-Horns Rev 3 offshore wind farm in Denmark generating 50,000 MWh, issuing RECs
-and carbon credits, transferring to German consumer via ACER cross-border
-interconnector with EU customs clearance.
+certification. RECs and carbon credits require RepMin(20); grid provenance
+requires RepMin(10). Live tested: Horns Rev 3 offshore wind farm in Denmark,
+50,000 MWh, REC + carbon credit issuance, transfer to German consumer via
+ACER cross-border interconnector.
 
 ---
 
@@ -222,7 +265,7 @@ interconnector with EU customs clearance.
 
 ## Gate Policy Model
 
-Every claim is evaluated by the EOS GateVM before acceptance.
+Every claim is evaluated by the EOS GateVM (RPN stack machine) before acceptance.
 
    RepMin(n)       ctx.reputation >= n
    AgeMax(secs)    now - claim.timestamp <= secs
@@ -260,9 +303,8 @@ Sensor readings accumulate in a local window buffer. At window close, one
 claim is published per window — not per reading. The claim includes aggregate
 stats (min, max, avg) and a Merkle root over all readings, so any individual
 reading can be proven against the published claim on demand. Breach detection
-runs continuously: a breach claim is always individual and always immediate,
-bypassing the window. Thresholds are jurisdiction-specific (FDA cold: 2-8C,
-food cold: 0-4C) with configurable tolerance before a breach is declared.
+runs continuously: a breach claim is always individual and always immediate.
+Thresholds are jurisdiction-specific (FDA cold: 2-8C, food cold: 0-4C).
 
 ---
 
@@ -271,164 +313,92 @@ food cold: 0-4C) with configurable tolerance before a breach is declared.
 A recall is issued by a RepMin(50) oracle and propagates via Anka gossip to
 all batch topic subscribers. Each holder must acknowledge within the severity
 window (class_i: 24h, class_ii: 72h, class_iii: 7 days). Holders who fail to
-acknowledge after the deadline receive a signed non-compliance record —
-silence itself becomes evidence. Resolution requires publishing quantity
-destroyed or returned with supporting evidence references. The complete
-lifecycle — issuance, acknowledgement, resolution, and silence detection —
-is fully automated and cryptographically verifiable.
+acknowledge receive a signed non-compliance record — silence becomes evidence.
+Resolution requires publishing quantity destroyed or returned with evidence.
+The complete lifecycle is fully automated and cryptographically verifiable.
 
 ---
 
-## Provenance Reconstruction
+## GS1 EPCIS 2.0 Bridge
 
-Given a batch ID, ESCS reconstructs the complete epistemic history from the
-Anka mesh audit trail — every event, every witness, every challenge. No
-central database is required. The mesh is the record. Targeted queries return
-custody chains, inspection histories, temperature histories, breach lists,
-customs trails, and contested claims. Analytics run offline: breach detection,
-failed inspection flags, customs holds, witness completeness, and time-window
-filtering all operate on the reconstructed provenance record.
+ESCS speaks EPCIS 2.0 — the lingua franca of supply chain traceability.
+DSCSA (US pharma), FSMA (US food), and EU DPP all require EPCIS.
+
+   src/interop/epcis.fard — bidirectional ESCS <-> EPCIS 2.0 mapping
+
+ESCS -> EPCIS (all 18 event types):
+   batch_created        -> ObjectEvent ADD,     bizStep: commissioning
+   custody_transfer     -> TransactionEvent,    bizStep: shipping
+                          sourceList + destinationList + quantityList
+   inspection_passed    -> ObjectEvent OBSERVE, disposition: active
+   inspection_failed    -> ObjectEvent OBSERVE, disposition: non_conformant
+   customs_cleared      -> ObjectEvent OBSERVE, bizStep: entering_exiting
+   temperature_log      -> ObjectEvent OBSERVE, sensorElementList (gs1:Temperature)
+   temperature_breach   -> ObjectEvent OBSERVE, TEMPERATURE_OUT_OF_RANGE exception
+   certification_issued -> ObjectEvent OBSERVE, certificationList
+   recall_issued        -> ObjectEvent DELETE,  disposition: recalled
+   recall_resolved      -> ObjectEvent DELETE,  disposition: destroyed
+
+EPCIS -> ESCS ingest:
+   Any EPCIS 2.0 document can be ingested and converted to ESCS events.
+   Every ingested event receives a cryptographic receipt on the Anka mesh.
+
+This makes ESCS a cryptographic audit layer underneath existing EPCIS
+implementations — not a replacement for SAP, IBM Food Trust, or TraceLink.
+
+---
+
+## Provenance Dashboard
+
+Single-file HTML dashboard. Wall Street design — Times New Roman,
+navy blue (#0a2d5e), gold accent border (#c8a84b).
+
+   cd sdk/dashboard && python3 proxy.py
+   open http://localhost:8080
+
+Features: status bar (Anka mesh, claim count, witnesses, adapter),
+batch query, breach banner, recall banner, summary grid,
+color-coded provenance chain timeline, recall history table.
 
 ---
 
 ## Adapter API (port 7710)
 
-The single integration point for institutions.
-
    POST /events                  publish any supply chain event
-   GET  /provenance/:batch_id    provenance stub + Anka query URLs
+   GET  /provenance/:batch_id    provenance query URLs
    GET  /jurisdictions           all 42 known claim spaces
    GET  /events/types            all 18 supported event types
    GET  /health                  service health + node identity
 
-Supports all 18 event types. Handles keypair management, signing,
-gate evaluation, Anka publish, and witness submission automatically.
-Institutions POST JSON and receive verifiable receipts.
-
 Receipt format:
-
-   {
-     "ok": true,
-     "published": true,
-     "witnessed": true,
-     "event_type": "custody_transfer",
-     "batch_id": "batch:LOT-001",
-     "claim_space": "SUPPLY.CUSTODY.v1",
-     "digest": "sha256:...",
-     "issuer_node_id": "ed25519:...",
-     "timestamp_unix_secs": 1710000000,
-     "receipt_url": "http://localhost:18080/audit/trail/sha256:..."
-   }
-
----
-
-## Client SDKs
-
-### Python (sdk/python/escs.py)
-
-   pip install requests
-
-   from escs import ESCSClient
-   client = ESCSClient("http://localhost:7710")
-
-   r = client.custody_transfer(
-       batch_id="batch:LOT-001",
-       from_party="party:producer",
-       to_party="party:shipper",
-       location="Chicago, IL",
-       quantity=1000,
-       unit="units",
-   )
-   print(r.ok)           # True
-   print(r.digest)       # sha256:...
-   print(r.receipt_url)  # http://...
-   print(r.witnessed)    # True
-
-   # Provenance
-   prov = client.provenance("batch:LOT-001")
-   print(prov.current_holder)
-   print(prov.under_recall)
-
-All 18 event types supported. No dependencies beyond requests.
-
-### Node.js (sdk/node/escs.js)
-
-   const { ESCSClient } = require("./escs")
-   const client = new ESCSClient("http://localhost:7710")
-
-   const r = await client.custodyTransfer({
-     batchId: "batch:LOT-001",
-     from: "party:producer",
-     to: "party:shipper",
-     location: "Chicago, IL",
-     quantity: 1000,
-     unit: "units",
-   })
-   console.log(r.digest)
-   console.log(r.witnessed)
-
-Requires Node 18+ (built-in fetch). No dependencies.
-
----
-
-## Dashboard (sdk/dashboard/)
-
-Single-file HTML provenance dashboard. Wall Street design —
-Times New Roman, navy blue (#0a2d5e), gold accent border (#c8a84b).
-
-   cd sdk/dashboard && python3 proxy.py
-   open http://localhost:8080
-
-Features:
- Status bar      Anka mesh online/offline, claim count, witness count
- Batch query     Enter any batch ID, press Enter or click Query Provenance
- Breach banner   Red alert when temperature breach in chain history
- Recall banner   Amber alert when batch under active recall
- Summary grid    Chain events, witnesses, challenges, integrity, recall status
- Chain timeline  Color-coded dot-and-line provenance chain
-                 navy: batch, custody
-                 green: inspection passed, certification
-                 red: temperature breach
-                 amber: recall events
- Recall table    Full recall history with severity badges
-
-Proxy (proxy.py) serves static files and proxies:
- /adapter/* -> http://localhost:7710
- /anka/*    -> http://localhost:18080
+   { ok, published, witnessed, event_type, batch_id, claim_space,
+     digest, issuer_node_id, timestamp_unix_secs, receipt_url }
 
 ---
 
 ## Live Scenarios Verified
 
-All five verticals tested end-to-end on a live Anka node:
+Pharmaceutical — FDA cold chain + Class I recall.
+Chicago batch, sensor window (3.1-5.1C), FDA inspection, temperature
+breach 11.2C, JFK customs, NYC distributor. Class I recall issued,
+acknowledged, resolved (10,000 units destroyed). 9 events, 11 witnesses.
 
-Pharmaceutical — Offshore cold chain + FDA Class I recall.
-Batch created in Chicago, sensor window (3.1-5.1C), FDA inspection, temperature
-breach at 11.2C, JFK customs, distributor NYC. FDA issues Class I recall linked
-to breach. Distributor acknowledges, destroys 10,000 units with evidence.
-Silence check: 0 non-compliant. Full provenance: 9 events, 11 witnesses.
+Food — FSMA + USDA organic + E. coli recall.
+Organic spinach Salinas Valley, USDA organic, food cold chain (0-4C),
+FSMA inspection, LA distributor. Class I E. coli recall. 6 events.
 
-Food — Farm-to-table organic produce + E. coli recall.
-Organic spinach from Salinas Valley, USDA organic certification, food cold
-chain (1.2-3.2C within 0-4C threshold), FSMA inspection, LA distributor.
-Class I recall for E. coli O157:H7. Full provenance: 6 events, under recall.
+Electronics — REACH + RoHS + conflict minerals.
+TSMC Taiwan, RMI conflict minerals, EU REACH, RoHS, Singapore distributor,
+EU customs Hamburg. 7 events, 3 certifications, fully witnessed.
 
-Electronics — Semiconductor supply chain, 3 EU compliance certifications.
-TSMC Taiwan, conflict minerals (RMI RMAP), REACH (no SVHC), RoHS (EU
-Directive), Singapore distributor, EU customs Hamburg. Full provenance:
-7 events, 3 certifications, fully witnessed, no recall.
+Apparel — Labor compliance + organic + fair trade.
+Organic cotton Dhaka Bangladesh, GOTS, ILO/SA8000/SEDEX labor audit,
+Fairtrade International, UK customs Felixstowe, Amsterdam retailer.
+9 events, fully witnessed. Certification revocation included.
 
-Apparel — Ethical fashion, 4 certification types.
-Organic cotton Dhaka Bangladesh, GOTS organic fiber, labor compliance (ILO,
-SA8000, SEDEX), Fairtrade International, sea freight Chittagong, UK customs
-Felixstowe, Amsterdam EU retailer. Certification revocation included.
-Full provenance: 9 events, fully witnessed.
-
-Energy — Offshore wind, renewable energy certificates + carbon credits.
-Horns Rev 3 Denmark, 50,000 MWh generation, REC (AIR), carbon credit (Verra
-VCS 25,000 tCO2e), ISO 50001, grid injection to Energinet, EU cross-border
-transfer to German consumer via ACER interconnector. Full provenance:
-9 events, fully witnessed.
+Energy — Offshore wind + REC + carbon credits.
+Horns Rev 3 Denmark, 50,000 MWh, AIR REC, Verra VCS 25,000 tCO2e,
+ISO 50001, grid transfer to Germany via ACER interconnector. 9 events.
 
 ---
 
@@ -448,12 +418,28 @@ transfer to German consumer via ACER interconnector. Full provenance:
    tests/test_sc_elec_live.fard       22 tests   electronics vertical live
    tests/test_sc_apparel_live.fard    34 tests   apparel vertical live
    tests/test_sc_energy_live.fard     38 tests   energy vertical live
+   tests/test_epcis.fard              41 tests   GS1 EPCIS 2.0 bridge
+   sdk/go/escs_test.go                15 tests   Go SDK live
+   sdk/java/ESCSTest.java             21 tests   Java SDK live
    ─────────────────────────────────────────────────────────────
-   total                             465 tests   0 failures
+   total                             542 tests   0 failures
 
-Run all tests (requires Anka on localhost:18080):
+Run FARD tests (requires Anka on localhost:18080):
 
    bash run_tests.sh
+
+Run Go SDK tests:
+
+   cd sdk/go && go test -v ./...
+
+Run Java SDK tests:
+
+   cd sdk/java
+   javac -cp "jackson-databind.jar:jackson-core.jar:jackson-annotations.jar" \
+     src/main/java/supply/escs/ESCSClient.java \
+     src/main/java/supply/escs/ESCSTest.java -d out
+   java -cp "out:jackson-databind.jar:jackson-core.jar:jackson-annotations.jar" \
+     supply.escs.ESCSTest
 
 ---
 
@@ -463,9 +449,7 @@ Run all tests (requires Anka on localhost:18080):
    docker run -d -p 7700:7700 escs:latest
 
    docker compose up anka gatewayd witnessd telemetryd
-
-   # Full stack including adapter
-   docker compose --profile full up
+   docker compose --profile full up   # includes adapter
 
 Services:
    anka         port 18080   Anka mesh node
@@ -489,6 +473,9 @@ Services:
      claim.fard           ESCS events -> eOS claim envelopes
      bridge.fard          full pipeline: event -> gate -> Anka -> witness
 
+   src/interop/
+     epcis.fard           GS1 EPCIS 2.0 bidirectional bridge
+
    src/services/
      adapterd.fard        institution HTTP adapter (port 7710)
      gatewayd.fard        claim evaluation gateway (port 7700)
@@ -496,10 +483,16 @@ Services:
      telemetryd.fard      telemetry service (port 7702)
 
    sdk/
-     python/escs.py       Python SDK
+     python/escs.py       Python SDK (all 18 events)
      python/example.py    Python quickstart
-     node/escs.js         Node.js SDK
+     node/escs.js         Node.js SDK (all 18 events)
      node/example.js      Node.js quickstart
+     go/escs.go           Go SDK (all 18 events, context-aware)
+     go/escs_test.go      Go SDK tests (15 live)
+     java/ESCSClient.java Java SDK (builder pattern, Java 11+)
+     java/ESCSTest.java   Java SDK tests (21 live)
+     java/Example.java    Java quickstart
+     openapi/escs.openapi.json  OpenAPI 3.0.3 specification
      dashboard/index.html provenance dashboard
      dashboard/proxy.py   dev proxy server
 
