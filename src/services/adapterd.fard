@@ -1,0 +1,374 @@
+import("std/net") as net
+import("std/json") as json
+import("std/rec") as rec
+import("std/str") as str
+import("std/env") as env
+import("std/list") as list
+import("../../vendor/eos/src/kernel/kernel") as eos
+import("../../vendor/eos/src/anka/bridge") as anka
+import("../../vendor/eos/src/anka/witness_bridge") as witness_bridge
+import("../supply_chain/bridge") as sc_bridge
+import("../supply_chain/event") as ev
+import("../supply_chain/claim") as sc_claim
+import("../supply_chain/policy") as policy
+import("../supply_chain/provenance") as prov
+import("../supply_chain/recall") as recall
+import("../supply_chain/jurisdictions") as jur
+
+// adapterd.fard — Institution HTTP adapter for ESCS
+//
+// The "hello world" for integrators. Institutions POST raw JSON supply
+// chain events here. The adapter handles everything:
+//   - keypair management (node identity)
+//   - event validation and routing
+//   - eOS claim envelope construction
+//   - policy gate evaluation
+//   - Anka mesh publish
+//   - witness submission
+//   - verifiable receipt response
+//
+// POST /events                  — publish any supply chain event
+// GET  /provenance/:batch_id    — full chain reconstruction
+// GET  /provenance/:batch_id/summary — compact summary
+// GET  /provenance/:batch_id/recalls — active recalls only
+// GET  /health                  — service health + node identity
+//
+// Integrators never handle keypairs, signing, or FARD.
+// They POST JSON. They get back receipts.
+
+fn get_env(key, default) {
+  let v = env.get(key) in
+  if v == null then default
+  else if rec.has(v, "some") then v.some
+  else if rec.has(v, "none") then default
+  else default
+}
+
+let ANKA_URL    = get_env("ANKA_URL", "http://localhost:18080")
+let PORT        = 7710
+let NODE_SEED   = get_env("ADAPTERD_SEED", "adapterd-default-node")
+
+let k           = eos.new(NODE_SEED)
+let anka_client = anka.client(ANKA_URL)
+
+// --- Event routing ---
+// Maps event_type string to the correct ev.* constructor and bridge function
+
+fn route_event(body) {
+ let event_type = rec.getOr(body, "event_type", "") in
+ match event_type {
+   "batch_created" =>
+     let event = ev.batch_created(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "product_code", ""),
+       rec.getOr(body, "quantity", 0),
+       rec.getOr(body, "unit", "units"),
+       rec.getOr(body, "origin_location", ""),
+       rec.getOr(body, "producer_id", ""),
+       rec.getOr(body, "lot_number", ""),
+       rec.getOr(body, "manufacture_date", 0),
+       rec.getOr(body, "expiry_date", 0)
+     ) in
+     { ok: true, event: event, reputation: 0 },
+
+   "custody_transfer" =>
+     let event = ev.custody_transfer(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "from", ""),
+       rec.getOr(body, "to", ""),
+       rec.getOr(body, "location", ""),
+       rec.getOr(body, "quantity", 0),
+       rec.getOr(body, "unit", "units"),
+       rec.getOr(body, "handoff_method", "standard"),
+       rec.getOr(body, "actor_id", "")
+     ) in
+     { ok: true, event: event, reputation: 0 },
+
+   "inspection_passed" =>
+     let event = ev.inspection_passed(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "inspector_id", ""),
+       rec.getOr(body, "inspection_type", "standard"),
+       rec.getOr(body, "location", ""),
+       rec.getOr(body, "standards", []),
+       rec.getOr(body, "notes", "")
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 5) },
+
+   "inspection_failed" =>
+     let event = ev.inspection_failed(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "inspector_id", ""),
+       rec.getOr(body, "inspection_type", "standard"),
+       rec.getOr(body, "location", ""),
+       rec.getOr(body, "failure_codes", []),
+       rec.getOr(body, "evidence_refs", [])
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 5) },
+
+   "customs_cleared" =>
+     let event = ev.customs_cleared(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "customs_authority", ""),
+       rec.getOr(body, "clearance_ref", ""),
+       rec.getOr(body, "port_of_entry", ""),
+       rec.getOr(body, "destination_country", ""),
+       rec.getOr(body, "actor_id", "")
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 10) },
+
+   "customs_held" =>
+     let event = ev.customs_held(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "customs_authority", ""),
+       rec.getOr(body, "hold_ref", ""),
+       rec.getOr(body, "port_of_entry", ""),
+       rec.getOr(body, "reason", ""),
+       rec.getOr(body, "evidence_refs", [])
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 10) },
+
+   "temperature_log" =>
+     let event = ev.temperature_log(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "sensor_id", ""),
+       rec.getOr(body, "location", ""),
+       rec.getOr(body, "temp_min_c", 0.0),
+       rec.getOr(body, "temp_max_c", 0.0),
+       rec.getOr(body, "temp_avg_c", 0.0),
+       rec.getOr(body, "window_start", 0),
+       rec.getOr(body, "window_end", 0),
+       rec.getOr(body, "reading_count", 0)
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 1) },
+
+   "temperature_breach" =>
+     let event = ev.temperature_breach(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "sensor_id", ""),
+       rec.getOr(body, "location", ""),
+       rec.getOr(body, "temp_c", 0.0),
+       rec.getOr(body, "threshold_min_c", 0.0),
+       rec.getOr(body, "threshold_max_c", 0.0),
+       rec.getOr(body, "breach_timestamp", 0),
+       rec.getOr(body, "duration_secs", 0),
+       rec.getOr(body, "evidence_ref", "")
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 1) },
+
+   "certification_issued" =>
+     let event = ev.certification_issued(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "cert_type", ""),
+       rec.getOr(body, "certifier_id", ""),
+       rec.getOr(body, "cert_ref", ""),
+       rec.getOr(body, "valid_from", 0),
+       rec.getOr(body, "valid_until", 0),
+       rec.getOr(body, "scope", "")
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 20) },
+
+   "certification_revoked" =>
+     let event = ev.certification_revoked(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "cert_type", ""),
+       rec.getOr(body, "certifier_id", ""),
+       rec.getOr(body, "cert_ref", ""),
+       rec.getOr(body, "reason", ""),
+       rec.getOr(body, "evidence_refs", [])
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 20) },
+
+   "recall_issued" =>
+     let event = ev.recall_issued(
+       rec.getOr(body, "recall_id", ""),
+       rec.getOr(body, "affected_batch_ids", []),
+       rec.getOr(body, "affected_lot_numbers", []),
+       rec.getOr(body, "product_code", ""),
+       rec.getOr(body, "severity", "class_iii"),
+       rec.getOr(body, "reason", ""),
+       rec.getOr(body, "issuer_id", ""),
+       rec.getOr(body, "instructions", ""),
+       rec.getOr(body, "regulatory_ref", "")
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 50) },
+
+   "recall_acknowledged" =>
+     let event = ev.recall_acknowledged(
+       rec.getOr(body, "recall_id", ""),
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "holder_id", ""),
+       rec.getOr(body, "quantity_held", 0),
+       rec.getOr(body, "location", ""),
+       rec.getOr(body, "action_plan", "")
+     ) in
+     { ok: true, event: event, reputation: 0 },
+
+   "recall_resolved" =>
+     let event = ev.recall_resolved(
+       rec.getOr(body, "recall_id", ""),
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "holder_id", ""),
+       rec.getOr(body, "resolution", ""),
+       rec.getOr(body, "quantity_destroyed", 0),
+       rec.getOr(body, "quantity_returned", 0),
+       rec.getOr(body, "evidence_refs", [])
+     ) in
+     { ok: true, event: event, reputation: 0 },
+
+   "sensor_reading" =>
+     let event = ev.sensor_reading(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "sensor_id", ""),
+       rec.getOr(body, "sensor_type", "temperature"),
+       rec.getOr(body, "location", ""),
+       rec.getOr(body, "value", 0.0),
+       rec.getOr(body, "unit", ""),
+       rec.getOr(body, "threshold_min", 0.0),
+       rec.getOr(body, "threshold_max", 0.0),
+       rec.getOr(body, "in_range", true)
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 1) },
+
+   "location_update" =>
+     let event = ev.location_update(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "actor_id", ""),
+       rec.getOr(body, "location", ""),
+       rec.getOr(body, "coordinates", { lat: 0.0, lng: 0.0 }),
+       rec.getOr(body, "facility_id", ""),
+       rec.getOr(body, "scan_method", "manual")
+     ) in
+     { ok: true, event: event, reputation: 0 },
+
+   "origin_attested" =>
+     let event = ev.origin_attested(
+       rec.getOr(body, "batch_id", ""),
+       rec.getOr(body, "certifier_id", ""),
+       rec.getOr(body, "country_of_origin", ""),
+       rec.getOr(body, "region", ""),
+       rec.getOr(body, "facility_id", ""),
+       rec.getOr(body, "standards", []),
+       rec.getOr(body, "evidence_refs", [])
+     ) in
+     { ok: true, event: event, reputation: rec.getOr(body, "reputation", 10) },
+
+   _ => { err: str.concat(["unknown event_type: ", event_type]) }
+ }
+}
+
+// --- Receipt builder ---
+
+fn make_receipt(result, event, timestamp_unix_secs) {
+ if !result.published then
+   {
+     ok: false,
+     published: false,
+     event_type: event.kind,
+     batch_id: rec.getOr(event, "batch_id", ""),
+     gate_result: result.gate_result,
+     reason: rec.getOr(result.gate_result, "err", "publish failed")
+   }
+ else
+   {
+     ok: true,
+     published: true,
+     witnessed: result.witnessed,
+     event_type: event.kind,
+     batch_id: rec.getOr(event, "batch_id", ""),
+     claim_space: result.claim_space,
+     digest: result.digest_hex,
+     issuer_node_id: k.keypair.node_id,
+     timestamp_unix_secs: timestamp_unix_secs,
+     receipt_url: str.concat([ANKA_URL, "/audit/trail/", result.digest_hex])
+   }
+}
+
+// --- Request handler ---
+
+fn handle(req) {
+ let path   = req.path in
+ let method = req.method in
+ let body   = if rec.has(req, "body") && str.len(req.body) > 0
+              then json.decode(req.body)
+              else {} in
+
+ if method == "GET" && path == "/health" then
+   {
+     status: 200,
+     body: json.encode({
+       ok: true,
+       service: "adapterd",
+       node_id: k.keypair.node_id,
+       anka_url: ANKA_URL,
+       supported_events: ev.ALL_KINDS
+     })
+   }
+
+ else if method == "POST" && path == "/events" then
+   let timestamp = rec.getOr(body, "timestamp_unix_secs", 1710000000) in
+   let routed = route_event(body) in
+   if rec.has(routed, "err") then
+     { status: 400, body: json.encode({ ok: false, err: routed.err }) }
+   else
+     let result = sc_bridge.publish_event(
+       anka_client, k, routed.event, timestamp, routed.reputation) in
+     let receipt = make_receipt(result, routed.event, timestamp) in
+     let status = if receipt.ok then 200 else 422 in
+     { status: status, body: json.encode(receipt) }
+
+ else if method == "GET" && str.starts_with(path, "/provenance/") then
+   let parts = str.split(path, "/") in
+   let batch_id = if list.len(parts) >= 3
+     then list.get(parts, 2) ?? ""
+     else "" in
+   let suffix = if list.len(parts) >= 4
+     then list.get(parts, 3) ?? ""
+     else "" in
+   if str.len(batch_id) == 0 then
+     { status: 400, body: json.encode({ ok: false, err: "missing batch_id" }) }
+   else
+     let provenance = prov.reconstruct(ANKA_URL, batch_id) in
+     if suffix == "summary" then
+       { status: 200, body: json.encode(prov.chain_summary(provenance)) }
+     else if suffix == "recalls" then
+       { status: 200, body: json.encode({
+           batch_id: batch_id,
+           recalls: provenance.recalls,
+           under_recall: provenance.under_recall,
+           recall_count: provenance.recall_count
+         }) }
+     else if suffix == "custody" then
+       { status: 200, body: json.encode({
+           batch_id: batch_id,
+           custody_chain: prov.events_by_kind(provenance, "custody_transfer"),
+           current_holder: provenance.current_holder
+         }) }
+     else if suffix == "breaches" then
+       { status: 200, body: json.encode({
+           batch_id: batch_id,
+           breaches: prov.events_by_kind(provenance, "temperature_breach"),
+           has_breach: prov.has_breach(provenance)
+         }) }
+     else
+       { status: 200, body: json.encode(provenance) }
+
+ else if method == "GET" && path == "/jurisdictions" then
+   { status: 200, body: json.encode({
+       ok: true,
+       jurisdictions: jur.ALL,
+       count: list.len(jur.ALL)
+     }) }
+
+ else if method == "GET" && path == "/events/types" then
+   { status: 200, body: json.encode({
+       ok: true,
+       event_types: ev.ALL_KINDS,
+       count: list.len(ev.ALL_KINDS)
+     }) }
+
+ else
+   { status: 404, body: json.encode({ ok: false, err: "not found", path: path }) }
+}
+
+net.serve(PORT, fn(req) { handle(req) })
