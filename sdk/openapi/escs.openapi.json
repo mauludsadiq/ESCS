@@ -1,0 +1,763 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ESCS \u2014 Epistemic Supply Chain Substrate",
+    "description": "Cryptographically-verifiable supply chain provenance. POST JSON events, receive verifiable receipts. Every event becomes a signed, witnessed, content-addressed claim on the Anka mesh.",
+    "version": "1.0.0",
+    "contact": {
+      "url": "https://github.com/mauludsadiq/ESCS"
+    },
+    "license": {
+      "name": "MUI"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:7710",
+      "description": "Local adapter (default)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Events",
+      "description": "Publish supply chain events"
+    },
+    {
+      "name": "Provenance",
+      "description": "Query provenance and chain history"
+    },
+    {
+      "name": "Discovery",
+      "description": "Discover jurisdictions and event types"
+    },
+    {
+      "name": "Health",
+      "description": "Service health"
+    }
+  ],
+  "paths": {
+    "/events": {
+      "post": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Publish a supply chain event",
+        "description": "Publishes any supply chain event to the Anka mesh. The adapter handles keypair management, signing, gate evaluation, and witness submission. Returns a verifiable receipt.",
+        "operationId": "publishEvent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventRequest"
+              },
+              "examples": {
+                "custody_transfer": {
+                  "summary": "Custody transfer",
+                  "value": {
+                    "event_type": "custody_transfer",
+                    "batch_id": "batch:LOT-2025-001",
+                    "from": "party:producer",
+                    "to": "party:shipper",
+                    "location": "Chicago, IL",
+                    "quantity": 1000,
+                    "unit": "units",
+                    "timestamp_unix_secs": 1710000000
+                  }
+                },
+                "batch_created": {
+                  "summary": "Batch created",
+                  "value": {
+                    "event_type": "batch_created",
+                    "batch_id": "batch:LOT-2025-001",
+                    "product_code": "DRUG-001",
+                    "quantity": 10000,
+                    "unit": "units",
+                    "origin_location": "Chicago, IL",
+                    "producer_id": "party:producer",
+                    "lot_number": "LOT-2025-001",
+                    "manufacture_date": 1710000000,
+                    "expiry_date": 1741536000
+                  }
+                },
+                "recall_issued": {
+                  "summary": "Recall issued (class I)",
+                  "value": {
+                    "event_type": "recall_issued",
+                    "recall_id": "recall:FDA-2025-001",
+                    "affected_batch_ids": [
+                      "batch:LOT-2025-001"
+                    ],
+                    "affected_lot_numbers": [
+                      "LOT-2025-001"
+                    ],
+                    "product_code": "DRUG-001",
+                    "severity": "class_i",
+                    "reason": "contamination detected",
+                    "issuer_id": "oracle:fda-001",
+                    "instructions": "destroy immediately",
+                    "regulatory_ref": "FDA-RECALL-2025-001",
+                    "reputation": 50
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Event published successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid event type or missing fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Gate policy denied \u2014 insufficient reputation or stale claim",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateDenied"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/provenance/{batch_id}": {
+      "get": {
+        "tags": [
+          "Provenance"
+        ],
+        "summary": "Get provenance for a batch",
+        "description": "Returns Anka mesh query URLs for full provenance reconstruction.",
+        "operationId": "getProvenance",
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "batch:LOT-2025-001"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Provenance info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvenanceInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jurisdictions": {
+      "get": {
+        "tags": [
+          "Discovery"
+        ],
+        "summary": "List all known jurisdictions",
+        "description": "Returns all 42 ESCS claim spaces across 5 verticals.",
+        "operationId": "listJurisdictions",
+        "responses": {
+          "200": {
+            "description": "List of jurisdictions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JurisdictionList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/events/types": {
+      "get": {
+        "tags": [
+          "Discovery"
+        ],
+        "summary": "List all supported event types",
+        "description": "Returns all 18 ESCS supply chain event types.",
+        "operationId": "listEventTypes",
+        "responses": {
+          "200": {
+            "description": "List of event types",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventTypeList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Service health check",
+        "description": "Returns service health, node identity, and supported event types.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "EventRequest": {
+        "type": "object",
+        "required": [
+          "event_type"
+        ],
+        "properties": {
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "batch_created",
+              "batch_split",
+              "batch_merge",
+              "custody_transfer",
+              "inspection_passed",
+              "inspection_failed",
+              "customs_cleared",
+              "customs_held",
+              "temperature_log",
+              "temperature_breach",
+              "certification_issued",
+              "certification_revoked",
+              "recall_issued",
+              "recall_acknowledged",
+              "recall_resolved",
+              "sensor_reading",
+              "location_update",
+              "origin_attested"
+            ],
+            "description": "The type of supply chain event"
+          },
+          "batch_id": {
+            "type": "string",
+            "description": "Batch identifier",
+            "example": "batch:LOT-2025-001"
+          },
+          "from": {
+            "type": "string",
+            "description": "Transferring party (custody_transfer)",
+            "example": "party:producer"
+          },
+          "to": {
+            "type": "string",
+            "description": "Receiving party (custody_transfer)",
+            "example": "party:shipper"
+          },
+          "location": {
+            "type": "string",
+            "description": "Physical location of the event",
+            "example": "Chicago, IL"
+          },
+          "quantity": {
+            "type": "integer",
+            "description": "Number of units",
+            "example": 1000
+          },
+          "unit": {
+            "type": "string",
+            "description": "Unit of measure",
+            "example": "units"
+          },
+          "product_code": {
+            "type": "string",
+            "description": "Product identifier",
+            "example": "DRUG-001"
+          },
+          "lot_number": {
+            "type": "string",
+            "description": "Lot or batch number",
+            "example": "LOT-2025-001"
+          },
+          "origin_location": {
+            "type": "string",
+            "description": "Manufacturing location (batch_created)"
+          },
+          "producer_id": {
+            "type": "string",
+            "description": "Producer identifier (batch_created)"
+          },
+          "manufacture_date": {
+            "type": "integer",
+            "description": "Unix timestamp of manufacture"
+          },
+          "expiry_date": {
+            "type": "integer",
+            "description": "Unix timestamp of expiry"
+          },
+          "inspector_id": {
+            "type": "string",
+            "description": "Inspector identifier (inspection events)"
+          },
+          "inspection_type": {
+            "type": "string",
+            "description": "Type of inspection"
+          },
+          "standards": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Standards applied"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Inspection notes"
+          },
+          "failure_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Failure codes (inspection_failed)"
+          },
+          "customs_authority": {
+            "type": "string",
+            "description": "Customs authority (customs events)",
+            "example": "CBP"
+          },
+          "clearance_ref": {
+            "type": "string",
+            "description": "Customs clearance reference"
+          },
+          "port_of_entry": {
+            "type": "string",
+            "description": "Port of entry"
+          },
+          "destination_country": {
+            "type": "string",
+            "description": "Destination country code",
+            "example": "US"
+          },
+          "sensor_id": {
+            "type": "string",
+            "description": "Sensor identifier"
+          },
+          "temp_min_c": {
+            "type": "number",
+            "description": "Minimum temperature in Celsius"
+          },
+          "temp_max_c": {
+            "type": "number",
+            "description": "Maximum temperature in Celsius"
+          },
+          "temp_avg_c": {
+            "type": "number",
+            "description": "Average temperature in Celsius"
+          },
+          "window_start": {
+            "type": "integer",
+            "description": "Sensor window start (Unix timestamp)"
+          },
+          "window_end": {
+            "type": "integer",
+            "description": "Sensor window end (Unix timestamp)"
+          },
+          "reading_count": {
+            "type": "integer",
+            "description": "Number of sensor readings in window"
+          },
+          "temp_c": {
+            "type": "number",
+            "description": "Breach temperature in Celsius"
+          },
+          "threshold_min_c": {
+            "type": "number",
+            "description": "Minimum threshold in Celsius"
+          },
+          "threshold_max_c": {
+            "type": "number",
+            "description": "Maximum threshold in Celsius"
+          },
+          "breach_timestamp": {
+            "type": "integer",
+            "description": "Unix timestamp of breach start"
+          },
+          "duration_secs": {
+            "type": "integer",
+            "description": "Breach duration in seconds"
+          },
+          "cert_type": {
+            "type": "string",
+            "description": "Certification type",
+            "example": "halal"
+          },
+          "certifier_id": {
+            "type": "string",
+            "description": "Certifier identifier"
+          },
+          "cert_ref": {
+            "type": "string",
+            "description": "Certification reference number"
+          },
+          "valid_from": {
+            "type": "integer",
+            "description": "Certification valid from (Unix timestamp)"
+          },
+          "valid_until": {
+            "type": "integer",
+            "description": "Certification valid until (Unix timestamp)"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Certification scope"
+          },
+          "recall_id": {
+            "type": "string",
+            "description": "Recall identifier",
+            "example": "recall:FDA-2025-001"
+          },
+          "affected_batch_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of affected batch IDs"
+          },
+          "affected_lot_numbers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of affected lot numbers"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "class_i",
+              "class_ii",
+              "class_iii"
+            ],
+            "description": "Recall severity class"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Reason for recall or hold"
+          },
+          "issuer_id": {
+            "type": "string",
+            "description": "Issuing authority identifier"
+          },
+          "instructions": {
+            "type": "string",
+            "description": "Recall instructions"
+          },
+          "regulatory_ref": {
+            "type": "string",
+            "description": "Regulatory reference number"
+          },
+          "holder_id": {
+            "type": "string",
+            "description": "Current holder identifier (recall ack/resolve)"
+          },
+          "quantity_held": {
+            "type": "integer",
+            "description": "Quantity held (recall_acknowledged)"
+          },
+          "action_plan": {
+            "type": "string",
+            "description": "Action plan (recall_acknowledged)"
+          },
+          "resolution": {
+            "type": "string",
+            "description": "Resolution method (recall_resolved)"
+          },
+          "quantity_destroyed": {
+            "type": "integer",
+            "description": "Units destroyed (recall_resolved)"
+          },
+          "quantity_returned": {
+            "type": "integer",
+            "description": "Units returned (recall_resolved)"
+          },
+          "sensor_type": {
+            "type": "string",
+            "description": "Sensor type",
+            "example": "temperature"
+          },
+          "value": {
+            "type": "number",
+            "description": "Sensor reading value"
+          },
+          "threshold_min": {
+            "type": "number",
+            "description": "Minimum threshold"
+          },
+          "threshold_max": {
+            "type": "number",
+            "description": "Maximum threshold"
+          },
+          "in_range": {
+            "type": "boolean",
+            "description": "Whether reading is within threshold"
+          },
+          "actor_id": {
+            "type": "string",
+            "description": "Actor performing the event"
+          },
+          "facility_id": {
+            "type": "string",
+            "description": "Facility identifier"
+          },
+          "scan_method": {
+            "type": "string",
+            "description": "Scan method (rfid, barcode, manual)"
+          },
+          "country_of_origin": {
+            "type": "string",
+            "description": "Country of origin (origin_attested)",
+            "example": "US"
+          },
+          "region": {
+            "type": "string",
+            "description": "Region within country"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Evidence reference digests"
+          },
+          "reputation": {
+            "type": "integer",
+            "description": "Submitter reputation score. Required for gated operations: inspection>=5, customs>=10, certification>=20, recall>=50",
+            "example": 10,
+            "default": 0
+          },
+          "timestamp_unix_secs": {
+            "type": "integer",
+            "description": "Event timestamp (Unix seconds). Defaults to current time.",
+            "example": 1710000000
+          }
+        }
+      },
+      "Receipt": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "published": {
+            "type": "boolean",
+            "example": true
+          },
+          "witnessed": {
+            "type": "boolean",
+            "example": true
+          },
+          "event_type": {
+            "type": "string",
+            "example": "custody_transfer"
+          },
+          "batch_id": {
+            "type": "string",
+            "example": "batch:LOT-2025-001"
+          },
+          "claim_space": {
+            "type": "string",
+            "example": "SUPPLY.CUSTODY.v1"
+          },
+          "digest": {
+            "type": "string",
+            "example": "sha256:80f70b88f186d84b..."
+          },
+          "issuer_node_id": {
+            "type": "string",
+            "example": "ed25519:4a5575ae6c1e..."
+          },
+          "timestamp_unix_secs": {
+            "type": "integer",
+            "example": 1710000000
+          },
+          "receipt_url": {
+            "type": "string",
+            "example": "http://localhost:18080/audit/trail/sha256:80f70b..."
+          }
+        }
+      },
+      "GateDenied": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": false
+          },
+          "published": {
+            "type": "boolean",
+            "example": false
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "example": "Gate denied"
+          },
+          "gate_result": {
+            "type": "object",
+            "properties": {
+              "err": {
+                "type": "string",
+                "example": "Gate denied: RepMin(50) required"
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": false
+          },
+          "err": {
+            "type": "string",
+            "example": "unknown event_type: invalid_event"
+          }
+        }
+      },
+      "ProvenanceInfo": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "batch_id": {
+            "type": "string"
+          },
+          "anka_url": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "query_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "JurisdictionList": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer",
+            "example": 42
+          },
+          "jurisdictions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "PHARMA.FDA.DSCSA.v1",
+              "PHARMA.COLD.FDA.v1",
+              "FOOD.FSMA.v1",
+              "SUPPLY.CUSTODY.v1"
+            ]
+          }
+        }
+      },
+      "EventTypeList": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer",
+            "example": 18
+          },
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "batch_created",
+              "custody_transfer",
+              "temperature_breach",
+              "recall_issued"
+            ]
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "service": {
+            "type": "string",
+            "example": "adapterd"
+          },
+          "node_id": {
+            "type": "string",
+            "example": "ed25519:4a5575ae6c1e..."
+          },
+          "anka_url": {
+            "type": "string",
+            "example": "http://localhost:18080"
+          },
+          "supported_events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}
