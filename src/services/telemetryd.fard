@@ -8,7 +8,7 @@ import("std/trace") as trace
 import("std/sqlite") as sqlite
 import("../../vendor/eos/src/kernel/kernel") as eos
 import("../../vendor/eos/src/kernel/canonical") as canon
-import("../supply_chain/jurisdictions") as jur
+import("../../vendor/eos/src/policy/jurisdictions") as jur
 import("../../vendor/eos/src/anka/bridge") as anka
 
 // telemetryd.fard — emit signed trace events as eOS claims

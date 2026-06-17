@@ -3,7 +3,7 @@ import("std/fs") as fs
 import("std/json") as json
 import("std/str") as str
 import("std/rec") as rec
-import("../supply_chain/compile") as policy
+import("../../vendor/eos/src/policy/compile") as policy
 
 // policyd.fard — CLI: compile a policy JSON file to bytecode
 // Usage: fardrun run --program src/services/policyd.fard -- --input policies/FDA.US.2025.json --output out/FDA.US.2025.bytecode

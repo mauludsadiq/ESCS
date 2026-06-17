@@ -5,7 +5,7 @@ import("std/str") as str
 import("std/env") as env
 import("../../vendor/eos/src/kernel/kernel") as eos
 import("../../vendor/eos/src/kernel/gate") as gate
-import("../supply_chain/compile") as policy
+import("../../vendor/eos/src/policy/compile") as policy
 
 // gatewayd.fard — HTTP gateway: evaluate claims against policies at ingress
 //
@@ -56,6 +56,6 @@ fn handle(req) {
   }
 }
 
-let port = int.parse(env.get("GATEWAYD_PORT") ?? "7700") |> fn(r) { r.v ?? 7700 }
+let port = 7700
 
 net.serve(port, fn(req) { handle(req) })
