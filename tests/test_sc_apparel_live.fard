@@ -1,0 +1,300 @@
+import("std/rec") as rec
+import("std/str") as str
+import("std/list") as list
+import("std/json") as json
+import("../src/supply_chain/bridge") as bridge
+import("../src/supply_chain/event") as ev
+import("../src/supply_chain/claim") as sc_claim
+import("../src/supply_chain/policy") as policy
+import("../src/supply_chain/provenance") as prov
+import("../src/supply_chain/recall") as recall
+import("../src/supply_chain/jurisdictions") as jur
+import("../vendor/eos/src/kernel/kernel") as eos
+
+// ============================================================
+// ESCS Apparel Supply Chain Live Test
+// Ethical fashion — labor compliance, origin, organic, fair trade
+//
+// Scenario: organic cotton t-shirt from Bangladesh factory
+// through fair trade certification to EU retailer
+// ============================================================
+
+let k           = eos.new("escs-apparel-live-node")
+let anka_client = bridge.make_client("http://localhost:18080")
+
+let batch_id  = "batch:APPAREL-COTTON-2025-LIVE-001"
+let product   = "ORGANIC-COTTON-TSHIRT-001"
+let lot       = "LOT-APPAREL-2025-LIVE-001"
+
+let t0 = 1710300000   // batch created at cotton farm
+let t1 = t0 + 7200    // origin attested
+let t2 = t0 + 14400   // organic fiber certification
+let t3 = t0 + 21600   // labor compliance audit
+let t4 = t0 + 28800   // fair trade certification
+let t5 = t0 + 36000   // custody: factory -> freight
+let t6 = t0 + 43200   // UK customs cleared
+let t7 = t0 + 50400   // custody: freight -> EU retailer
+let t8 = t0 + 57600   // ISO 9001 quality cert
+
+// --- Step 1: Batch created at cotton farm ---
+
+let batch_event = ev.batch_created(
+ batch_id, product, 20000, "units",
+ "Dhaka Export Processing Zone, Bangladesh",
+ "party:factory-dhaka-001",
+ lot, t0, t0 + 63072000
+)
+
+test "apparel step 1: batch_created publishes" {
+ let result = bridge.publish_batch_created(anka_client, k, batch_event, t0) in
+ result.published == true
+}
+
+test "apparel step 1: batch_created is witnessed" {
+ let result = bridge.publish_batch_created(anka_client, k, batch_event, t0) in
+ result.witnessed == true
+}
+
+// --- Step 2: Country of origin attestation ---
+
+let origin_event = ev.origin_attested(
+ batch_id, "certifier:origin-bd-001", "BD",
+ "Dhaka Division", "facility:factory-dhaka-001",
+ ["MADE-IN-BANGLADESH", "EPZ-CERTIFIED"], []
+)
+
+test "apparel step 2: origin_attested publishes with rep=10" {
+ let result = bridge.publish_origin(anka_client, k, origin_event, t1, 10) in
+ result.published == true
+}
+
+test "apparel step 2: origin claim_space is SUPPLY_ORACLE_V1" {
+ let env = sc_claim.event_to_envelope(k, origin_event, t1) in
+ env.claim.claim_space == jur.SUPPLY_ORACLE_V1
+}
+
+test "apparel step 2: APPAREL_ORIGIN_V1 requires RepMin(10)" {
+ policy.min_reputation_for(jur.APPAREL_ORIGIN_V1) == 10
+}
+
+// --- Step 3: Organic fiber certification ---
+
+let organic_cert = ev.certification_issued(
+ batch_id, "organic_fiber",
+ "certifier:gots-001", "GOTS-2025-001",
+ t0, t0 + 31536000,
+ "Global Organic Textile Standard certified — 100% organic cotton"
+)
+
+test "apparel step 3: organic fiber cert passes with rep=20" {
+ let result = bridge.publish_certification(anka_client, k, organic_cert, t2, 20) in
+ result.published == true
+}
+
+test "apparel step 3: organic fiber cert fails with rep=19" {
+ let result = bridge.publish_certification(anka_client, k, organic_cert, t2, 19) in
+ result.published == false
+}
+
+test "apparel step 3: APPAREL_ORGANIC_V1 requires RepMin(20)" {
+ policy.min_reputation_for(jur.APPAREL_ORGANIC_V1) == 20
+}
+
+// --- Step 4: Labor compliance audit ---
+
+let labor_audit = ev.inspection_passed(
+ batch_id, "inspector:sedex-001", "labor_compliance_audit",
+ "Dhaka Export Processing Zone, Bangladesh",
+ ["ILO-CORE-CONVENTIONS", "SA8000", "SEDEX-SMETA"],
+ "no child labor, living wage verified, safe working conditions confirmed"
+)
+
+test "apparel step 4: labor compliance audit passes with rep=5" {
+ let result = bridge.publish_inspection(anka_client, k, labor_audit, t3, 5) in
+ result.published == true
+}
+
+test "apparel step 4: labor audit fails with rep=4" {
+ let result = bridge.publish_inspection(anka_client, k, labor_audit, t3, 4) in
+ result.published == false
+}
+
+test "apparel step 4: APPAREL_LABOR_V1 requires RepMin(20)" {
+ policy.min_reputation_for(jur.APPAREL_LABOR_V1) == 20
+}
+
+test "apparel step 4: labor audit evidence refs contain standards" {
+ let env = sc_claim.event_to_envelope(k, labor_audit, t3) in
+ list.len(env.claim.evidence_refs) > 0
+}
+
+// --- Step 5: Fair trade certification ---
+
+let fair_cert = ev.certification_issued(
+ batch_id, "fair_trade",
+ "certifier:flo-cert-001", "FLO-CERT-2025-001",
+ t0, t0 + 31536000,
+ "Fairtrade International certified — premium paid to producer cooperative"
+)
+
+test "apparel step 5: fair trade cert passes with rep=20" {
+ let result = bridge.publish_certification(anka_client, k, fair_cert, t4, 20) in
+ result.published == true
+}
+
+test "apparel step 5: fair trade cert fails with rep=19" {
+ let result = bridge.publish_certification(anka_client, k, fair_cert, t4, 19) in
+ result.published == false
+}
+
+test "apparel step 5: APPAREL_FAIR_V1 requires RepMin(20)" {
+ policy.min_reputation_for(jur.APPAREL_FAIR_V1) == 20
+}
+
+test "apparel step 5: fair cert evidence refs contain certifier" {
+ let env = sc_claim.event_to_envelope(k, fair_cert, t4) in
+ list.any(env.claim.evidence_refs, fn(r) { r == "certifier:flo-cert-001" })
+}
+
+// --- Step 6: Custody transfer factory -> freight forwarder ---
+
+let custody_1 = ev.custody_transfer(
+ batch_id,
+ "party:factory-dhaka-001",
+ "party:freight-maersk-001",
+ "Chittagong Port, Bangladesh",
+ 20000, "units", "sea_freight_container", "actor:logistics-001"
+)
+
+test "apparel step 6: custody transfer factory->freight publishes" {
+ let result = bridge.publish_custody_transfer(anka_client, k, custody_1, t5) in
+ result.published == true
+}
+
+test "apparel step 6: custody transfer is witnessed" {
+ let result = bridge.publish_custody_transfer(anka_client, k, custody_1, t5) in
+ result.witnessed == true
+}
+
+// --- Step 7: UK customs clearance ---
+
+let uk_customs = ev.customs_cleared(
+ batch_id, "HMRC", "HMRC-2025-9901",
+ "Felixstowe Port", "UK", "actor:hmrc-001"
+)
+
+test "apparel step 7: UK customs passes with rep=10" {
+ let result = bridge.publish_customs(anka_client, k, uk_customs, t6, 10) in
+ result.published == true
+}
+
+test "apparel step 7: UK customs fails with rep=9" {
+ let result = bridge.publish_customs(anka_client, k, uk_customs, t6, 9) in
+ result.published == false
+}
+
+test "apparel step 7: SUPPLY_CUSTOMS_UK_V1 requires RepMin(10)" {
+ policy.min_reputation_for(jur.SUPPLY_CUSTOMS_UK_V1) == 10
+}
+
+// --- Step 8: Custody transfer freight -> EU retailer ---
+
+let custody_2 = ev.custody_transfer(
+ batch_id,
+ "party:freight-maersk-001",
+ "party:retailer-eu-001",
+ "Amsterdam Distribution Center, Netherlands",
+ 20000, "units", "truck", "actor:logistics-002"
+)
+
+test "apparel step 8: custody transfer freight->retailer publishes" {
+ let result = bridge.publish_custody_transfer(anka_client, k, custody_2, t7) in
+ result.published == true
+}
+
+// --- Step 9: ISO 9001 quality certification ---
+
+let iso_cert = ev.certification_issued(
+ batch_id, "iso_9001",
+ "certifier:tuv-001", "TUV-ISO9001-2025-001",
+ t0, t0 + 31536000, "quality management system verified"
+)
+
+test "apparel step 9: ISO 9001 cert passes with rep=20" {
+ let result = bridge.publish_certification(anka_client, k, iso_cert, t8, 20) in
+ result.published == true
+}
+
+// --- Certification revocation test ---
+
+let labor_revoked = ev.certification_revoked(
+ batch_id, "labor_compliance",
+ "certifier:sedex-001", "SEDEX-2024-OLD",
+ "supplier substitution detected — uninspected subcontractor used",
+ ["audit:evidence:sha256:rev-001"]
+)
+
+test "apparel: certification_revoked publishes" {
+ let result = bridge.publish_event(anka_client, k, labor_revoked, t8 + 1000, 20) in
+ result.published == true
+}
+
+test "apparel: certification_revoked predicate correct" {
+ let env = sc_claim.event_to_envelope(k, labor_revoked, t8 + 1000) in
+ env.claim.predicate == "certification_revoked"
+}
+
+// --- Provenance analysis ---
+
+let apparel_chain = [
+ prov.make_chain_entry("batch_created",        jur.SUPPLY_BATCH_V1,     "sha256:a1", str.concat(["sc:batch_created:", batch_id]),        t0, k.keypair.node_id, { batch_id: batch_id }, ["w1"], []),
+ prov.make_chain_entry("origin_attested",      jur.SUPPLY_ORACLE_V1,    "sha256:a2", str.concat(["sc:origin_attested:", batch_id]),      t1, k.keypair.node_id, { country_of_origin: "BD" }, ["w2"], []),
+ prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,   "sha256:a3", str.concat(["sc:certification_issued:", batch_id]), t2, k.keypair.node_id, { cert_type: "organic_fiber" }, ["w3"], []),
+ prov.make_chain_entry("inspection_passed",    jur.SUPPLY_INSPECTION_V1,"sha256:a4", str.concat(["sc:inspection_passed:", batch_id]),    t3, k.keypair.node_id, { inspector_id: "inspector:sedex-001" }, ["w4"], []),
+ prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,   "sha256:a5", str.concat(["sc:certification_issued:", batch_id]), t4, k.keypair.node_id, { cert_type: "fair_trade" }, ["w5"], []),
+ prov.make_chain_entry("custody_transfer",     jur.SUPPLY_CUSTODY_V1,   "sha256:a6", str.concat(["sc:custody_transfer:", batch_id]),     t5, k.keypair.node_id, { from_party: "party:factory-dhaka-001", to_party: "party:freight-maersk-001" }, ["w6"], []),
+ prov.make_chain_entry("customs_cleared",      jur.SUPPLY_CUSTOMS_UK_V1,"sha256:a7", str.concat(["sc:customs_cleared:", batch_id]),      t6, k.keypair.node_id, { clearance_ref: "HMRC-2025-9901" }, ["w7"], []),
+ prov.make_chain_entry("custody_transfer",     jur.SUPPLY_CUSTODY_V1,   "sha256:a8", str.concat(["sc:custody_transfer:", batch_id]),     t7, k.keypair.node_id, { from_party: "party:freight-maersk-001", to_party: "party:retailer-eu-001" }, ["w8"], []),
+ prov.make_chain_entry("certification_issued", jur.SUPPLY_ISO9001_V1,   "sha256:a9", str.concat(["sc:certification_issued:", batch_id]), t8, k.keypair.node_id, { cert_type: "iso_9001" }, ["w9"], [])
+]
+
+let apparel_prov = prov.make_provenance(
+ batch_id, apparel_chain, [],
+ "party:retailer-eu-001", true, 9, 0
+)
+
+test "apparel provenance: chain_length is 9" {
+ apparel_prov.chain_length == 9
+}
+
+test "apparel provenance: under_recall is false" {
+ apparel_prov.under_recall == false
+}
+
+test "apparel provenance: has_breach is false" {
+ prov.has_breach(apparel_prov) == false
+}
+
+test "apparel provenance: 2 custody transfers" {
+ list.len(prov.events_by_kind(apparel_prov, "custody_transfer")) == 2
+}
+
+test "apparel provenance: 3 certifications in chain" {
+ list.len(prov.events_by_kind(apparel_prov, "certification_issued")) == 3
+}
+
+test "apparel provenance: current_holder is EU retailer" {
+ apparel_prov.current_holder == "party:retailer-eu-001"
+}
+
+test "apparel provenance: fully_witnessed is true" {
+ prov.fully_witnessed(apparel_prov) == true
+}
+
+test "apparel provenance: chain_integrity is true" {
+ apparel_prov.chain_integrity == true
+}
+
+test "apparel provenance: total_witnesses is 9" {
+ apparel_prov.total_witnesses == 9
+}
