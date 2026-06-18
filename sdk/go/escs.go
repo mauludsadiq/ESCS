@@ -490,6 +490,48 @@ r.Timestamp = ts(r.Timestamp)
 return c.post(ctx, "/events", req{r, "origin_attested"})
 }
 
+
+// BatchRequest is a list of events to publish concurrently.
+type BatchRequest struct {
+Events []interface{} `json:"events"`
+}
+
+// BatchReceipt is the response from a batch publish.
+type BatchReceipt struct {
+OK        bool      `json:"ok"`
+Total     int       `json:"total"`
+Succeeded int       `json:"succeeded"`
+Failed    int       `json:"failed"`
+Receipts  []Receipt `json:"receipts"`
+}
+
+
+// Batch publishes multiple events concurrently via POST /events/batch.
+// Up to 100 events per call. Returns receipts in submission order.
+func (c *Client) Batch(ctx context.Context, events []interface{}) (*BatchReceipt, error) {
+b, err := json.Marshal(map[string]interface{}{"events": events})
+if err != nil {
+return nil, fmt.Errorf("marshal: %w", err)
+}
+req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+c.baseURL+"/events/batch", bytes.NewReader(b))
+if err != nil {
+return nil, err
+}
+req.Header.Set("Content-Type", "application/json")
+resp, err := c.httpClient.Do(req)
+if err != nil {
+return nil, fmt.Errorf("request: %w", err)
+}
+defer resp.Body.Close()
+data, _ := io.ReadAll(resp.Body)
+var r BatchReceipt
+if err := json.Unmarshal(data, &r); err != nil {
+return nil, fmt.Errorf("decode: %w", err)
+}
+return &r, nil
+}
+
 // --- Provenance queries ---
 
 func (c *Client) Provenance(ctx context.Context, batchID string) (*Provenance, error) {

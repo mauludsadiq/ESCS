@@ -1,5 +1,6 @@
 import("std/net") as net
 import("std/json") as json
+import("std/time") as time
 import("std/promise") as promise
 import("std/rec") as rec
 import("std/str") as str
@@ -348,6 +349,42 @@ fn handle(req) {
        supported_events: ev.ALL_KINDS
      })
    }
+
+ else if method == "POST" && path == "/events/batch" then
+   // Batch publish — accepts array of events, publishes concurrently
+   // Returns array of receipts in submission order
+   let events = if rec.has(body, "events")
+     then body.events
+     else if list.is_list(body) then body
+     else [] in
+   if list.len(events) == 0 then
+     { status: 400, body: json.encode({ ok: false, err: "events array required" }) }
+   else if list.len(events) > 100 then
+     { status: 400, body: json.encode({ ok: false, err: "batch size limit is 100" }) }
+   else
+     let timestamp = time.now() in
+     let tasks = list.map(events, fn(ev_body) {
+       fn() {
+         let ts = rec.getOr(ev_body, "timestamp_unix_secs", timestamp) in
+         let routed = route_event(ev_body) in
+         if rec.has(routed, "err") then
+           { ok: false, err: routed.err, event_type: rec.getOr(ev_body, "event_type", "") }
+         else
+           let result = sc_bridge.publish_event(
+             anka_client, k, routed.event, ts, routed.reputation) in
+           make_receipt(result, routed.event, ts)
+       }
+     }) in
+     let receipts = promise.spawn_ordered(tasks) in
+     let total = list.len(receipts) in
+     let succeeded = list.len(list.filter(receipts, fn(r) { rec.getOr(r, "ok", false) })) in
+     { status: 200, body: json.encode({
+         ok: true,
+         total: total,
+         succeeded: succeeded,
+         failed: total - succeeded,
+         receipts: receipts
+       }) }
 
  else if method == "POST" && path == "/events" then
    let timestamp = rec.getOr(body, "timestamp_unix_secs", 1710000000) in

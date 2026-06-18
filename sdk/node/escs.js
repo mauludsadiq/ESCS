@@ -430,6 +430,16 @@ class ESCSClient {
   }
 
 
+
+  async batch(events) {
+    /**
+     * Publish multiple events concurrently via POST /events/batch.
+     * Returns { ok, total, succeeded, failed, receipts }.
+     * Up to 100 events per batch.
+     */
+    return this._post('/events/batch', { events })
+  }
+
   async submitSigned(envelope) {
     const data = await this._post('/submit_signed', envelope.toDict())
     return new Receipt(data)

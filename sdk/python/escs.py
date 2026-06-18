@@ -564,6 +564,15 @@ class ESCSClient:
         })
 
 
+
+    def batch(self, events: list) -> dict:
+        """
+        Publish multiple events concurrently via POST /events/batch.
+        Returns { ok, total, succeeded, failed, receipts }.
+        Up to 100 events per batch. Events published in parallel.
+        """
+        return self._post("/events/batch", {"events": events})
+
     def submit_signed(self, envelope) -> "Receipt":
         """
         Submit a pre-signed envelope to the adapter.

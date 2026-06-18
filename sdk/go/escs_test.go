@@ -279,3 +279,52 @@ if p.BatchID != "batch:GO-TEST-001" {
 t.Fatalf("wrong batch_id: %s", p.BatchID)
 }
 }
+
+func TestBatch(t *testing.T) {
+events := []interface{}{
+map[string]interface{}{
+"event_type": "custody_transfer",
+"batch_id":   "batch:GO-BATCH-001",
+"from":       "party:producer",
+"to":         "party:shipper",
+"location":   "Chicago, IL",
+"quantity":   100,
+"unit":       "units",
+},
+map[string]interface{}{
+"event_type": "custody_transfer",
+"batch_id":   "batch:GO-BATCH-002",
+"from":       "party:producer",
+"to":         "party:shipper",
+"location":   "Chicago, IL",
+"quantity":   100,
+"unit":       "units",
+},
+map[string]interface{}{
+"event_type": "custody_transfer",
+"batch_id":   "batch:GO-BATCH-003",
+"from":       "party:producer",
+"to":         "party:shipper",
+"location":   "Chicago, IL",
+"quantity":   100,
+"unit":       "units",
+},
+}
+r, err := client.Batch(ctx, events)
+if err != nil {
+t.Fatalf("batch failed: %v", err)
+}
+if !r.OK {
+t.Fatal("batch not ok")
+}
+if r.Total != 3 {
+t.Fatalf("expected total=3, got %d", r.Total)
+}
+if r.Succeeded != 3 {
+t.Fatalf("expected succeeded=3, got %d", r.Succeeded)
+}
+if r.Failed != 0 {
+t.Fatalf("expected failed=0, got %d", r.Failed)
+}
+t.Logf("batch: %d/%d succeeded in parallel", r.Succeeded, r.Total)
+}
