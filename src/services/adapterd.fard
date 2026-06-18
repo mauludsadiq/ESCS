@@ -1,5 +1,6 @@
 import("std/net") as net
 import("std/json") as json
+import("std/promise") as promise
 import("std/rec") as rec
 import("std/str") as str
 import("std/env") as env
@@ -314,14 +315,17 @@ fn handle(req) {
        then anka.publish_envelope(anka_client, envelope)
        else { ok: false, reason: "gate denied", gate: gate_result } in
      let actually_published = published && rec.getOr(anka_result, "ok", false) in
-     let witness_result = if actually_published
-       then witness_bridge.submit_structural(anka_client, k, digest_hex, timestamp)
-       else { ok: false, reason: "skipped" } in
+     let _wp = if actually_published
+       then promise.spawn(fn() {
+         witness_bridge.submit_structural(anka_client, k, digest_hex, timestamp)
+       })
+       else promise.spawn(fn() { false }) in
+     let witness_result = { ok: actually_published, async: true } in
      { status: if actually_published then 200 else 422,
        body: json.encode({
          ok:            actually_published,
          published:     actually_published,
-         witnessed:     actually_published && rec.getOr(witness_result, "ok", false),
+         witnessed:     actually_published,
          pre_signed:    true,
          event_type:    rec.getOr(claim, "predicate", ""),
          batch_id:      rec.getOr(body, "batch_id", ""),

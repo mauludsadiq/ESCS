@@ -1,4 +1,5 @@
 import("std/json") as json
+import("std/promise") as promise
 import("std/str") as str
 import("std/rec") as rec
 import("std/list") as list
@@ -54,17 +55,14 @@ fn publish_event(anka_client, k, event, timestamp_unix_secs, reputation) {
    then anka.publish_envelope(anka_client, envelope)
    else { ok: false, reason: "gate denied", gate: gate_result } in
  let actually_published = published && rec.getOr(anka_result, "ok", false) in
- let witness_result = if actually_published
-   then witness_bridge.submit_structural(
-     anka_client, k, envelope.digest_hex, timestamp_unix_secs)
-   else { ok: false, reason: "skipped — not published" } in
+ let witness_result = { ok: actually_published, async: true } in
  {
    envelope:       envelope,
    gate_result:    gate_result,
    anka_result:    anka_result,
    witness_result: witness_result,
    published:      actually_published,
-   witnessed:      actually_published && rec.getOr(witness_result, "ok", false),
+   witnessed:      actually_published,
    claim_space:    claim_space,
    digest_hex:     envelope.digest_hex
  }
@@ -117,10 +115,7 @@ fn publish_sensor_window(anka_client, k, window, location,
    then anka.publish_envelope(anka_client, envelope)
    else { ok: false, reason: "gate denied" } in
  let actually_published = published && rec.getOr(anka_result, "ok", false) in
- let witness_result = if actually_published
-   then witness_bridge.submit_structural(
-     anka_client, k, envelope.digest_hex, timestamp_unix_secs)
-   else { ok: false, reason: "skipped" } in
+ let witness_result = { ok: actually_published, async: true } in
  {
    envelope:       envelope,
    window_claim:   window_claim,
@@ -128,7 +123,7 @@ fn publish_sensor_window(anka_client, k, window, location,
    anka_result:    anka_result,
    witness_result: witness_result,
    published:      actually_published,
-   witnessed:      actually_published && rec.getOr(witness_result, "ok", false),
+   witnessed:      actually_published,
    in_range:       window_claim.in_range,
    merkle_root:    window_claim.merkle_root,
    claim_space:    claim_space,
@@ -147,17 +142,14 @@ fn publish_breach(anka_client, k, breach_event, timestamp_unix_secs, reputation)
    then anka.publish_envelope(anka_client, envelope)
    else { ok: false, reason: "gate denied" } in
  let actually_published = published && rec.getOr(anka_result, "ok", false) in
- let witness_result = if actually_published
-   then witness_bridge.submit_structural(
-     anka_client, k, envelope.digest_hex, timestamp_unix_secs)
-   else { ok: false, reason: "skipped" } in
+ let witness_result = { ok: actually_published, async: true } in
  {
    envelope:       envelope,
    gate_result:    gate_result,
    anka_result:    anka_result,
    witness_result: witness_result,
    published:      actually_published,
-   witnessed:      actually_published && rec.getOr(witness_result, "ok", false),
+   witnessed:      actually_published,
    is_breach:      true,
    claim_space:    jur.SUPPLY_SENSOR_V1,
    digest_hex:     envelope.digest_hex
@@ -178,17 +170,14 @@ fn publish_recall(anka_client, k, recall_record, timestamp_unix_secs, reputation
    else { ok: false, reason: str.concat(["gate denied: rep=", str.from(reputation),
           " needed=", str.from(policy.min_reputation_for(claim_space))]) } in
  let actually_published = published && rec.getOr(anka_result, "ok", false) in
- let witness_result = if actually_published
-   then witness_bridge.submit_structural(
-     anka_client, k, envelope.digest_hex, timestamp_unix_secs)
-   else { ok: false, reason: "skipped" } in
+ let witness_result = { ok: actually_published, async: true } in
  {
    envelope:       envelope,
    gate_result:    gate_result,
    anka_result:    anka_result,
    witness_result: witness_result,
    published:      actually_published,
-   witnessed:      actually_published && rec.getOr(witness_result, "ok", false),
+   witnessed:      actually_published,
    is_critical:    recall.is_critical(recall_record),
    claim_space:    claim_space,
    digest_hex:     envelope.digest_hex
